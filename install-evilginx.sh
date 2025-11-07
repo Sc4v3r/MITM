@@ -175,8 +175,49 @@ fi
 echo -e "${GREEN}[✓]${NC} Evilginx2 built successfully"
 echo ""
 
-# Step 5: Set permissions
-echo -e "${BLUE}[5/6]${NC} Configuring permissions..."
+# Step 5: Install custom phishlets
+echo -e "${BLUE}[5/7]${NC} Installing custom NAC-Tap phishlets..."
+
+# Find script directory (where install-evilginx.sh is located)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CUSTOM_PHISHLETS_DIR="$SCRIPT_DIR/phishlets"
+
+if [ -d "$CUSTOM_PHISHLETS_DIR" ]; then
+    echo -e "${YELLOW}[INFO]${NC} Found custom phishlets directory"
+    
+    # Copy custom o365 phishlet (optimized for DNS poisoning)
+    if [ -f "$CUSTOM_PHISHLETS_DIR/o365.yaml" ]; then
+        echo -e "${YELLOW}[INFO]${NC} Installing optimized O365 phishlet for DNS poisoning..."
+        
+        # Backup original if exists
+        if [ -f "$EVILGINX_DIR/phishlets/o365.yaml" ]; then
+            cp "$EVILGINX_DIR/phishlets/o365.yaml" "$EVILGINX_DIR/phishlets/o365.yaml.orig"
+            echo -e "${YELLOW}[INFO]${NC} Original O365 phishlet backed up"
+        fi
+        
+        # Install custom phishlet
+        cp "$CUSTOM_PHISHLETS_DIR/o365.yaml" "$EVILGINX_DIR/phishlets/o365.yaml"
+        echo -e "${GREEN}[✓]${NC} Custom O365 phishlet installed (DNS poisoning optimized)"
+    fi
+    
+    # Copy any other custom phishlets
+    for phishlet in "$CUSTOM_PHISHLETS_DIR"/*.yaml; do
+        if [ -f "$phishlet" ]; then
+            filename=$(basename "$phishlet")
+            if [ "$filename" != "o365.yaml" ]; then
+                cp "$phishlet" "$EVILGINX_DIR/phishlets/$filename"
+                echo -e "${GREEN}[✓]${NC} Installed custom phishlet: $filename"
+            fi
+        fi
+    done
+else
+    echo -e "${YELLOW}[WARN]${NC} Custom phishlets directory not found at $CUSTOM_PHISHLETS_DIR"
+    echo -e "${YELLOW}[INFO]${NC} Using default Evilginx phishlets"
+fi
+echo ""
+
+# Step 6: Set permissions
+echo -e "${BLUE}[6/7]${NC} Configuring permissions..."
 
 # Make binary executable
 chmod +x "$EVILGINX_DIR/evilginx"
@@ -189,8 +230,8 @@ setcap CAP_NET_BIND_SERVICE=+eip "$EVILGINX_DIR/evilginx" 2>&1 || {
 echo -e "${GREEN}[✓]${NC} Permissions configured"
 echo ""
 
-# Step 6: Verify installation
-echo -e "${BLUE}[6/6]${NC} Verifying installation..."
+# Step 7: Verify installation
+echo -e "${BLUE}[7/7]${NC} Verifying installation..."
 
 if [ -f "$EVILGINX_DIR/evilginx" ]; then
     VERSION_OUTPUT=$("$EVILGINX_DIR/evilginx" -h 2>&1 | head -n 1 || echo "Evilginx2")
@@ -210,7 +251,11 @@ if [ -d "$EVILGINX_DIR/phishlets" ]; then
     
     # Check for Microsoft phishlets
     if [ -f "$EVILGINX_DIR/phishlets/o365.yaml" ]; then
-        echo -e "${GREEN}[✓]${NC} Microsoft O365 phishlet available"
+        echo -e "${GREEN}[✓]${NC} Microsoft O365 phishlet available (DNS poisoning optimized)"
+        # Check if it's the custom version
+        if grep -q "@nac-tap" "$EVILGINX_DIR/phishlets/o365.yaml" 2>/dev/null; then
+            echo -e "${GREEN}[✓]${NC} Custom NAC-Tap O365 phishlet verified"
+        fi
     else
         echo -e "${YELLOW}[WARN]${NC} O365 phishlet not found"
     fi
