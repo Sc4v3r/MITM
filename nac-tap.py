@@ -876,55 +876,39 @@ def enable_internet_routing(bridge_name='br0'):
     try:
         log("Enabling internet routing for appliance...")
         
-        # Try multiple methods to find gateway interface
+        # Gateway must be eth0 or eth1 (never wlan0 - that's for management)
         gateway_iface = None
         
-        # Method 1: Parse ip route
-        result = run_cmd(['ip', 'route', 'show', 'default'])
-        if result and result.returncode == 0 and result.stdout:
-            log(f"Default route output: {result.stdout}")
-            # Try different patterns
-            patterns = [
-                r'default via \S+ dev (\S+)',
-                r'default.*dev (\S+)',
-                r'dev (\S+).*default'
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, result.stdout)
-                if match:
-                    gateway_iface = match.group(1)
-                    break
-        
-        # Method 2: Get first non-bridge interface with a default route
-        if not gateway_iface:
-            result = run_cmd(['ip', 'route'])
+        # Test eth0 first, then eth1
+        for iface in ['eth0', 'eth1']:
+            result = run_cmd(['ip', 'link', 'show', iface])
             if result and result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'default' in line:
-                        words = line.split()
-                        if 'dev' in words:
-                            idx = words.index('dev')
-                            if idx + 1 < len(words):
-                                iface = words[idx + 1]
-                                if iface != bridge_name and not iface.startswith('br'):
-                                    gateway_iface = iface
-                                    break
-        
-        # Method 3: Use wlan0 as fallback (common WiFi interface)
-        if not gateway_iface:
-            for iface in ['wlan0', 'eth0', 'ens33', 'enp0s3']:
-                result = run_cmd(['ip', 'link', 'show', iface])
-                if result and result.returncode == 0:
+                # Check if interface is UP
+                if 'state UP' in result.stdout or 'UP' in result.stdout:
                     gateway_iface = iface
-                    log(f"Using {iface} as gateway interface (fallback)")
+                    log(f"Found active ethernet interface: {iface}")
                     break
+                else:
+                    log(f"Interface {iface} exists but is DOWN")
         
         if not gateway_iface:
-            log("Could not determine gateway interface", 'ERROR')
-            log("Available interfaces:", 'INFO')
+            # Try to find which eth interface has the default route
+            result = run_cmd(['ip', 'route', 'show', 'default'])
+            if result and result.returncode == 0 and result.stdout:
+                log(f"Default route: {result.stdout}")
+                if 'eth0' in result.stdout:
+                    gateway_iface = 'eth0'
+                elif 'eth1' in result.stdout:
+                    gateway_iface = 'eth1'
+        
+        if not gateway_iface:
+            log("Could not find eth0 or eth1 for gateway", 'ERROR')
+            log("Available interfaces:")
             result = run_cmd(['ip', 'link', 'show'])
             if result:
-                log(result.stdout)
+                for line in result.stdout.split('\n'):
+                    if 'eth' in line.lower() or 'state' in line.lower():
+                        log(f"  {line}")
             return False
         
         log(f"Using gateway interface: {gateway_iface}")
