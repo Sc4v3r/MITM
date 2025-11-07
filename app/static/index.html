@@ -246,19 +246,10 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <div id="evilginxNotInstalled" style="display:none;background:#ffe7e7;padding:20px;border-radius:8px;margin:15px 0;border-left:4px solid #e74c3c">
 <h3 style="color:#e74c3c;margin-bottom:15px">WARNING: Evilginx2 Not Installed</h3>
 <p style="margin-bottom:15px">Evilginx2 is required for OAuth token and cookie capture.</p>
-
-<div style="background:#fff3cd;padding:15px;border-radius:5px;margin:15px 0;border-left:3px solid #ffc107">
-<h4 style="color:#856404;margin-bottom:10px">Internet Access Required</h4>
-<p style="font-size:.9em;color:#856404;margin-bottom:10px">Installation needs internet to download Go compiler and clone repository.</p>
-<div style="display:flex;gap:10px;align-items:center">
-<span style="font-size:.9em;color:#856404">Routing Status: <strong id="routingStatus2">Disabled</strong></span>
-<button id="btnEnableRouting" class="btn btn-start" onclick="enableRouting()" style="padding:6px 12px;font-size:.85em">Enable Internet</button>
-<button id="btnDisableRouting" class="btn btn-danger" onclick="disableRouting()" style="padding:6px 12px;font-size:.85em" disabled>Disable</button>
-</div>
-</div>
-
-<button class="btn btn-start" onclick="installEvilginx()" style="margin-top:10px">Install Evilginx2 Now</button>
-<p style="margin-top:15px;font-size:.9em;color:#999">Installation takes 5-10 minutes (includes Go compiler build)</p>
+<p style="font-size:.95em;color:#333;margin-top:10px">To install Evilginx2, run on the appliance:</p>
+<pre style="background:#2d2d2d;color:#f8f8f2;padding:15px;border-radius:5px;margin:10px 0;font-size:.9em;overflow-x:auto">cd /opt/nac-tap
+sudo ./install-evilginx.sh</pre>
+<p style="font-size:.9em;color:#999;margin-top:10px">Installation takes 5-10 minutes. Refresh this page after completion.</p>
 </div>
 
 <div id="evilginxInfo" style="display:none;background:#e7f3ff;padding:20px;border-radius:8px;margin:15px 0">
@@ -769,79 +760,6 @@ catch(err){showAlert("Error: "+err.message,"error")}}
 
 function exportSessions(){
 window.location.href="/api/evilginx/sessions";
-}
-
-async function enableRouting(){
-if(!confirm("Enable internet routing?\n\nThis allows the appliance to access the internet through the gateway.\n\nNeeded for:\n- Installing Evilginx2\n- Downloading updates\n- Remote access"))return;
-const btnEnable=document.getElementById("btnEnableRouting");
-if(btnEnable)btnEnable.disabled=true;
-showAlert("Enabling internet routing...","info");
-try{
-const res=await fetch("/api/routing/enable",{method:"POST"});
-const data=await res.json();
-if(data.success){
-showAlert("Internet routing enabled!","success");
-setTimeout(fetchStatus,1000);
-}else{
-showAlert("Failed to enable routing","error");
-if(btnEnable)btnEnable.disabled=false;
-}
-}
-catch(err){
-showAlert("Error: "+err.message,"error");
-if(btnEnable)btnEnable.disabled=false;
-}
-}
-
-async function disableRouting(){
-if(!confirm("Disable internet routing?"))return;
-showAlert("Disabling internet routing...","info");
-try{
-const res=await fetch("/api/routing/disable",{method:"POST"});
-const data=await res.json();
-if(data.success){
-showAlert("Internet routing disabled","success");
-setTimeout(fetchStatus,1000);
-}
-}
-catch(err){
-showAlert("Error: "+err.message,"error");
-}
-}
-
-async function installEvilginx(){
-if(!confirm("Install Evilginx2?\n\nThis will:\n- Install Go compiler\n- Clone Evilginx2 repository\n- Build from source\n- Configure permissions\n\nThis may take 5-10 minutes."))return;
-
-const btn=document.getElementById("btnInstallEvilginx");
-if(btn){
-btn.disabled=true;
-btn.textContent="Installing...";
-}
-showAlert("Installing Evilginx2... This may take several minutes. Check logs for progress.","info");
-try{
-
-const res=await fetch("/api/evilginx/install",{method:"POST"});
-
-const data=await res.json();
-
-if(data.success){
-showAlert("Evilginx2 installed successfully! Path: "+data.path,"success");
-setTimeout(fetchStatus,2000);
-}else{
-showAlert("Installation failed: "+(data.error||"Unknown error"),"error");
-if(btn){
-btn.disabled=false;
-btn.textContent="Install Evilginx";
-}
-}
-}
-catch(err){
-showAlert("Installation error: "+err.message,"error");
-if(btn){
-btn.disabled=false;
-btn.textContent="Install Evilginx";
-}
-}
 }
 
 // Wait for DOM to be fully loaded before attaching event listeners

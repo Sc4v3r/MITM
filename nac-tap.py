@@ -1044,7 +1044,6 @@ class BridgeManager:
         self.analysis_interval = CONFIG.get('ANALYSIS_INTERVAL', 300)
         self.stop_monitoring = False
         self.monitor_thread = None
-        self.internet_routing_enabled = False
 
     def detect_interfaces(self):
         """Detect ethernet interfaces (not wireless)"""
@@ -1372,8 +1371,7 @@ class BridgeManager:
             'gateway_ip': self.gateway_ip,
             'logs': self._get_logs(),
             'mitm': self.mitm_manager.get_status(),
-            'evilginx': self.evilginx_manager.get_status(),
-            'internet_routing': self.internet_routing_enabled
+            'evilginx': self.evilginx_manager.get_status()
         }
 
         if self.tcpdump_process and self.tcpdump_process.poll() is None:
@@ -1747,36 +1745,6 @@ class NACWebHandler(BaseHTTPRequestHandler):
         elif path == '/api/evilginx/clear_sessions':
             self.bridge_manager.evilginx_manager.clear_sessions()
             self._send_json({'success': True})
-            
-        elif path == '/api/evilginx/install':
-            try:
-                log("Received Evilginx installation request")
-                result = self.bridge_manager.evilginx_manager.install()
-                self._send_json(result)
-            except Exception as e:
-                log(f"Installation endpoint error: {e}", 'ERROR')
-                self._send_json({'success': False, 'error': str(e)})
-        
-        # Internet routing endpoints
-        elif path == '/api/routing/enable':
-            try:
-                success = enable_internet_routing(CONFIG['BRIDGE_NAME'])
-                if success:
-                    self.bridge_manager.internet_routing_enabled = True
-                self._send_json({'success': success})
-            except Exception as e:
-                log(f"Enable routing error: {e}", 'ERROR')
-                self._send_json({'success': False, 'error': str(e)})
-        
-        elif path == '/api/routing/disable':
-            try:
-                success = disable_internet_routing(CONFIG['BRIDGE_NAME'])
-                if success:
-                    self.bridge_manager.internet_routing_enabled = False
-                self._send_json({'success': success})
-            except Exception as e:
-                log(f"Disable routing error: {e}", 'ERROR')
-                self._send_json({'success': False, 'error': str(e)})
         
         else:
             self.send_error(404)
