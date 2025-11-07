@@ -253,11 +253,14 @@ sudo ./install-evilginx.sh</pre>
 </div>
 
 <div id="evilginxInfo" style="display:none;background:#e7f3ff;padding:20px;border-radius:8px;margin:15px 0">
-<h3 style="color:#0066cc;margin-bottom:15px">Active Phishing</h3>
+<h3 style="color:#0066cc;margin-bottom:15px">Active - DNS Poisoning Mode</h3>
 <p style="margin:8px 0"><strong>Phishlet:</strong> <code id="evilginxPhishlet" style="background:#fff;padding:4px 8px;border-radius:4px">-</code></p>
-<p style="margin:8px 0"><strong>Lure URL:</strong> <code id="evilginxLure" style="background:#fff;padding:4px 8px;border-radius:4px;font-size:.85em">-</code></p>
+<p style="margin:8px 0"><strong>Domain:</strong> <code id="evilginxLure" style="background:#fff;padding:4px 8px;border-radius:4px;font-size:.85em">-</code></p>
 <p style="margin:8px 0"><strong>Bridge IP:</strong> <code style="background:#fff;padding:4px 8px;border-radius:4px">10.200.66.1</code></p>
-<p style="margin-top:15px;font-size:.9em;color:#0066cc">Send victims to the lure URL. Captured sessions appear below.</p>
+<div style="background:#fff3cd;padding:12px;border-radius:5px;margin-top:15px;border-left:3px solid #ffc107">
+<p style="font-size:.9em;color:#856404;margin:0"><strong>No Lure Needed:</strong> Use DNS poisoning to redirect <strong id="evilginxDomain2">-</strong> to 10.200.66.1</p>
+<p style="font-size:.85em;color:#856404;margin-top:8px">User visits Microsoft normally → Gets redirected to Evilginx → Session captured</p>
+</div>
 </div>
 
 <h3 style="margin:20px 0 15px 0">Microsoft Phishlet Selection</h3>
