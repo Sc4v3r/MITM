@@ -81,7 +81,9 @@ class LootAnalyzer:
         self.pcredz_path = CONFIG['PCREDZ_PATH']
         self.loot_items = []
         self.loot_file = CONFIG['LOOT_FILE']
+        self.raw_output_file = CONFIG['LOOT_FILE'].replace('.json', '_raw.txt')
         self.analysis_lock = threading.Lock()
+        self.raw_output = ""
         self.load_existing_loot()
 
     def analyze_pcap(self, pcap_file):
@@ -105,18 +107,18 @@ class LootAnalyzer:
                 timeout=300
             )
 
-            new_loot = self.parse_pcredz_output(result.stdout, pcap_file)
-
-            if new_loot:
-                with self.analysis_lock:
-                    self.loot_items.extend(new_loot)
-                    self.save_loot()
-
-                log(f"Found {len(new_loot)} credential(s)", 'SUCCESS')
-                return {'success': True, 'new_items': len(new_loot)}
+            # Save raw output
+            with self.analysis_lock:
+                self.raw_output = result.stdout
+                self.save_raw_output()
+            
+            # Check if there's any output
+            if result.stdout and result.stdout.strip():
+                log(f"PCredz analysis complete - check Loot tab for results", 'SUCCESS')
+                return {'success': True, 'output': result.stdout}
             else:
                 log("No credentials found in this PCAP")
-                return {'success': True, 'new_items': 0}
+                return {'success': True, 'output': 'No credentials found'}
 
         except subprocess.TimeoutExpired:
             log("PCredz analysis timed out (>5min)", 'WARNING')
@@ -178,6 +180,16 @@ class LootAnalyzer:
             os.chmod(self.loot_file, 0o600)
         except Exception as e:
             log(f"Failed to save loot: {e}", 'ERROR')
+    
+    def save_raw_output(self):
+        """Save raw PCredz output to text file"""
+        try:
+            with open(self.raw_output_file, 'w') as f:
+                f.write(self.raw_output)
+            os.chmod(self.raw_output_file, 0o600)
+            log(f"Saved raw PCredz output to {self.raw_output_file}")
+        except Exception as e:
+            log(f"Failed to save raw output: {e}", 'ERROR')
 
     def load_existing_loot(self):
         """Load existing loot from file"""
@@ -188,25 +200,29 @@ class LootAnalyzer:
                 log(f"Loaded {len(self.loot_items)} existing loot items")
         except Exception:
             self.loot_items = []
+        
+        # Load raw output if exists
+        try:
+            if os.path.exists(self.raw_output_file):
+                with open(self.raw_output_file, 'r') as f:
+                    self.raw_output = f.read()
+        except Exception:
+            self.raw_output = ""
 
     def get_loot_summary(self):
-        """Get loot statistics"""
-        protocols = {}
-        for item in self.loot_items:
-            proto = item.get('protocol', 'Unknown')
-            protocols[proto] = protocols.get(proto, 0) + 1
-
+        """Get loot statistics - returns raw output"""
         return {
-            'count': len(self.loot_items),
-            'items': self.loot_items,
-            'protocols': protocols
+            'raw_output': self.raw_output,
+            'has_output': bool(self.raw_output and self.raw_output.strip())
         }
 
     def clear_loot(self):
         """Clear all loot"""
         with self.analysis_lock:
             self.loot_items = []
+            self.raw_output = ""
             self.save_loot()
+            self.save_raw_output()
         log("Loot cleared")
 
 # ============================================================================
@@ -743,13 +759,13 @@ class NACWebHandler(BaseHTTPRequestHandler):
         elif path == '/api/loot':
             self._send_json(self.bridge_manager.loot_analyzer.get_loot_summary())
         elif path == '/api/loot/export':
-            loot = self.bridge_manager.loot_analyzer.loot_items
+            raw_output = self.bridge_manager.loot_analyzer.raw_output
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Type', 'text/plain')
             self.send_header('Content-Disposition',
-                             'attachment; filename="loot.json"')
+                             'attachment; filename="pcredz_output.txt"')
             self.end_headers()
-            self.wfile.write(json.dumps(loot, indent=2).encode())
+            self.wfile.write(raw_output.encode('utf-8'))
         elif path == '/api/download':
             query = parse_qs(urlparse(self.path).query)
             pcap_file = query.get('file', [None])[0]
@@ -936,16 +952,6 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:linear-gradient(135deg,
 <div class="card-value" id="captureDuration">00:00:00</div>
 <div class="card-detail" id="captureStartTime">Not started</div>
 </div>
-<div class="card">
-<div class="card-title">Client IP</div>
-<div class="card-value" id="clientIP" style="font-size:1.4em">-</div>
-<div class="card-detail">Detected from traffic</div>
-</div>
-<div class="card">
-<div class="card-title">Gateway IP</div>
-<div class="card-value" id="gatewayIP" style="font-size:1.4em">-</div>
-<div class="card-detail">Detected from traffic</div>
-</div>
 </div>
 <div id="captureInfo" class="capture-info">
 <h3>📦 Active Capture</h3>
@@ -967,6 +973,7 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:linear-gradient(135deg,
 <div class="button-group">
 <button id="btnStart" class="btn btn-start">▶️ Start Capture</button>
 <button id="btnStop" class="btn btn-stop" disabled>⏹️ Stop Capture</button>
+<button id="btnPcapSize" class="btn btn-refresh" disabled>📊 PCAP Size: 0 MB</button>
 <button id="btnDelete" class="btn btn-danger" disabled>🗑️ Delete PCAP</button>
 <button id="btnRefresh" class="btn btn-refresh">🔄 Refresh</button>
 <button id="btnDownload" class="btn btn-download" disabled>⬇️ Download PCAP</button>
@@ -977,36 +984,18 @@ body{font-family:'Segoe UI',Tahoma,sans-serif;background:linear-gradient(135deg,
 </div>
 </div>
 <div id="lootTab" class="tab-content">
-<h2 style="margin-bottom:20px;color:#667eea">Captured Credentials & Sensitive Data</h2>
-<div class="loot-stats">
-<div class="stat-card">
-<div class="stat-value" id="totalLoot">0</div>
-<div class="stat-label">Total Items</div>
-</div>
-<div class="stat-card">
-<div class="stat-value" id="protocolCount">0</div>
-<div class="stat-label">Protocols</div>
-</div>
-</div>
-<div class="loot-filters">
-<button class="filter-btn active" onclick="filterLoot('all')">All</button>
-<button class="filter-btn" onclick="filterLoot('HTTP')">HTTP</button>
-<button class="filter-btn" onclick="filterLoot('FTP')">FTP</button>
-<button class="filter-btn" onclick="filterLoot('SMTP')">SMTP</button>
-<button class="filter-btn" onclick="filterLoot('NTLM')">NTLM</button>
-<button class="filter-btn" onclick="filterLoot('IMAP')">IMAP</button>
-</div>
-<div id="lootItems" class="loot-items">
-<div class="empty-state">
-<div class="empty-state-icon">🎣</div>
-<p>No credentials captured yet</p>
-<p style="margin-top:10px;font-size:.9em">Start capture and wait for traffic analysis</p>
-</div>
-</div>
-<div class="button-group">
+<h2 style="margin-bottom:20px;color:#667eea">PCredz Analysis Output</h2>
+<div class="button-group" style="margin-bottom:20px">
 <button onclick="analyzeNow()" id="btnAnalyze" class="btn btn-start">🔍 Analyze PCAP Now</button>
-<button onclick="exportLoot()" class="btn btn-download">⬇️ Export Loot (JSON)</button>
-<button onclick="clearLoot()" class="btn btn-danger">🗑️ Clear All</button>
+<button onclick="exportLoot()" class="btn btn-download">⬇️ Export Output (TXT)</button>
+<button onclick="clearLoot()" class="btn btn-danger">🗑️ Clear Output</button>
+</div>
+<div id="lootOutput" class="logs-section" style="max-height:600px;white-space:pre-wrap;word-wrap:break-word">
+<div style="color:#999;text-align:center;padding:40px">
+<div style="font-size:3em;margin-bottom:15px">🎣</div>
+<p>No PCredz output yet</p>
+<p style="margin-top:10px;font-size:.9em">Click "Analyze PCAP Now" to run credential extraction</p>
+</div>
 </div>
 </div>
 </div>
@@ -1017,15 +1006,14 @@ function showAlert(message,type="info"){const el=document.getElementById("alert"
 function formatBytes(bytes){if(bytes===0)return"0 B";const k=1024,sizes=["B","KB","MB","GB"];const i=Math.floor(Math.log(bytes)/Math.log(k));return parseFloat((bytes/Math.pow(k,i)).toFixed(2))+" "+sizes[i]}
 function formatDuration(seconds){const h=Math.floor(seconds/3600);const m=Math.floor(seconds%3600/60);const s=Math.floor(seconds%60);return`${h.toString().padStart(2,"0")}:${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`}
 function switchTab(tab){document.querySelectorAll(".tab-content").forEach(el=>el.classList.remove("active"));document.querySelectorAll(".tab-btn").forEach(el=>el.classList.remove("active"));document.getElementById(tab+"Tab").classList.add("active");event.target.classList.add("active");if(tab==="loot")fetchLoot()}
-function updateStatus(data){const isActive=data.status==="active";const badge=document.getElementById("statusBadge");badge.className=`status-badge ${isActive?"active":"inactive"}`;badge.innerHTML=`<span class="status-indicator ${isActive?"active":"inactive"}"></span><span>${isActive?"Capturing":"Inactive"}</span>`;const captureInfo=document.getElementById("captureInfo");captureInfo.className=`capture-info ${isActive?"active":""}`;document.getElementById("clientIP").textContent=data.client_ip||"-";document.getElementById("gatewayIP").textContent=data.gateway_ip||"-";if(isActive){document.getElementById("captureFile").textContent=data.pcap_file?data.pcap_file.split("/").pop():"-";document.getElementById("capturePid").textContent=data.pid||"-";document.getElementById("bridgeName").textContent=data.bridge||"br0";const size=data.pcap_size||0;const packets=data.packet_count||0;document.getElementById("captureSize").textContent=formatBytes(size);document.getElementById("capturePackets").textContent=packets.toLocaleString()+" packets";if(data.start_time){if(!startTime)try{startTime=new Date(data.start_time)}catch(e){startTime=new Date}const elapsed=Math.floor((new Date()-startTime)/1000);document.getElementById("captureDuration").textContent=formatDuration(elapsed);document.getElementById("captureStartTime").textContent="Started "+startTime.toLocaleTimeString()}document.getElementById("btnStart").disabled=true;document.getElementById("btnStop").disabled=false;document.getElementById("btnDelete").disabled=true;document.getElementById("btnDownload").disabled=false}else{document.getElementById("btnStart").disabled=false;document.getElementById("btnStop").disabled=true;document.getElementById("btnDelete").disabled=!data.pcap_file;document.getElementById("btnDownload").disabled=!data.pcap_file;startTime=null;document.getElementById("captureSize").textContent=data.pcap_size?formatBytes(data.pcap_size):"0 MB";document.getElementById("capturePackets").textContent="0 packets";document.getElementById("captureDuration").textContent="00:00:00";document.getElementById("captureStartTime").textContent="Not started"}if(data.interfaces){const container=document.getElementById("interfaces");container.innerHTML=data.interfaces.map(intf=>`<div class="interface-card"><div class="interface-header"><span class="interface-name">${intf.name}</span><span class="interface-status ${intf.state==="UP"?"up":"down"}">${intf.state}</span></div><div class="interface-detail"><span>MAC:</span><span style="font-family:monospace">${intf.mac||"N/A"}</span></div><div class="interface-detail"><span>Speed:</span><span>${intf.speed||"Unknown"}</span></div><div class="interface-detail"><span>Role:</span><span>${intf.role||"N/A"}</span></div>${intf.bridge?`<div class="interface-detail"><span>Bridge:</span><span>${intf.bridge}</span></div>`:""}</div>`).join("")}if(data.logs&&data.logs.length>0){const logEl=document.getElementById("logs");logEl.innerHTML=data.logs.map(line=>`<div style="padding:2px 0">${line}</div>`).join("");logEl.scrollTop=logEl.scrollHeight}}
-async function analyzeNow(){document.getElementById("btnAnalyze").disabled=true;showAlert("Running PCredz analysis... This may take a few minutes.","info");try{const res=await fetch("/api/analyze",{method:"POST"});const data=await res.json();if(data.success){if(data.new_items>0){showAlert(`Analysis complete! Found ${data.new_items} credential(s)`,"success");fetchLoot()}else{showAlert("Analysis complete. No new credentials found.","info")}}else{showAlert("Analysis failed: "+(data.error||"Unknown error"),"error")}}catch(err){showAlert("Error: "+err.message,"error")}finally{document.getElementById("btnAnalyze").disabled=false}}
+function updateStatus(data){try{const isActive=data.status==="active";const badge=document.getElementById("statusBadge");if(badge){badge.className=`status-badge ${isActive?"active":"inactive"}`;badge.innerHTML=`<span class="status-indicator ${isActive?"active":"inactive"}"></span><span>${isActive?"Capturing":"Inactive"}</span>`}const captureInfo=document.getElementById("captureInfo");if(captureInfo){captureInfo.className=`capture-info ${isActive?"active":""}`}const size=data.pcap_size||0;const packets=data.packet_count||0;const pcapSizeBtn=document.getElementById("btnPcapSize");if(pcapSizeBtn){pcapSizeBtn.textContent=`📊 PCAP Size: ${formatBytes(size)}`;pcapSizeBtn.disabled=!data.pcap_file}if(isActive){const captureFile=document.getElementById("captureFile");if(captureFile)captureFile.textContent=data.pcap_file?data.pcap_file.split("/").pop():"-";const capturePid=document.getElementById("capturePid");if(capturePid)capturePid.textContent=data.pid||"-";const bridgeName=document.getElementById("bridgeName");if(bridgeName)bridgeName.textContent=data.bridge||"br0";const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=formatBytes(size);const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent=packets.toLocaleString()+" packets";if(data.start_time){if(!startTime)try{startTime=new Date(data.start_time)}catch(e){startTime=new Date}const elapsed=Math.floor((new Date()-startTime)/1000);const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent=formatDuration(elapsed);const captureStartTime=document.getElementById("captureStartTime");if(captureStartTime)captureStartTime.textContent="Started "+startTime.toLocaleTimeString()}const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=true;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=false;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=true;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=false}else{const btnStart=document.getElementById("btnStart");if(btnStart)btnStart.disabled=false;const btnStop=document.getElementById("btnStop");if(btnStop)btnStop.disabled=true;const btnDelete=document.getElementById("btnDelete");if(btnDelete)btnDelete.disabled=!data.pcap_file;const btnDownload=document.getElementById("btnDownload");if(btnDownload)btnDownload.disabled=!data.pcap_file;startTime=null;const captureSize=document.getElementById("captureSize");if(captureSize)captureSize.textContent=data.pcap_size?formatBytes(data.pcap_size):"0 MB";const capturePackets=document.getElementById("capturePackets");if(capturePackets)capturePackets.textContent="0 packets";const captureDuration=document.getElementById("captureDuration");if(captureDuration)captureDuration.textContent="00:00:00";const captureStartTime=document.getElementById("captureStartTime");if(captureStartTime)captureStartTime.textContent="Not started"}if(data.interfaces){const container=document.getElementById("interfaces");if(container){container.innerHTML=data.interfaces.map(intf=>`<div class="interface-card"><div class="interface-header"><span class="interface-name">${intf.name}</span><span class="interface-status ${intf.state==="UP"?"up":"down"}">${intf.state}</span></div><div class="interface-detail"><span>MAC:</span><span style="font-family:monospace">${intf.mac||"N/A"}</span></div><div class="interface-detail"><span>Speed:</span><span>${intf.speed||"Unknown"}</span></div><div class="interface-detail"><span>Role:</span><span>${intf.role||"N/A"}</span></div>${intf.bridge?`<div class="interface-detail"><span>Bridge:</span><span>${intf.bridge}</span></div>`:""}</div>`).join("")}}if(data.logs&&data.logs.length>0){const logEl=document.getElementById("logs");if(logEl){logEl.innerHTML=data.logs.map(line=>`<div style="padding:2px 0">${line}</div>`).join("");logEl.scrollTop=logEl.scrollHeight}}}catch(err){console.error("Error updating status:",err)}}
+async function analyzeNow(){const btnAnalyze=document.getElementById("btnAnalyze");if(btnAnalyze)btnAnalyze.disabled=true;showAlert("Running PCredz analysis... This may take a few minutes.","info");try{const res=await fetch("/api/analyze",{method:"POST"});const data=await res.json();if(data.success){showAlert("Analysis complete! Check output below.","success");fetchLoot()}else{showAlert("Analysis failed: "+(data.error||"Unknown error"),"error")}}catch(err){showAlert("Error: "+err.message,"error")}finally{if(btnAnalyze)btnAnalyze.disabled=false}}
 async function deletePCAP(){if(confirm("Delete current PCAP file? This cannot be undone!")){try{const res=await fetch("/api/delete_pcap",{method:"POST"});const data=await res.json();if(data.success){showAlert("PCAP deleted","success");fetchStatus();fetchLoot()}else{showAlert("Failed to delete PCAP: "+(data.error||"Unknown error"),"error")}}catch(err){showAlert("Error: "+err.message,"error")}}}
 document.getElementById("btnDelete").addEventListener("click",deletePCAP);
-async function fetchStatus(){try{const res=await fetch("/api/status");const data=await res.json();updateStatus(data)}catch(err){console.error("Failed:",err)}}
-async function fetchLoot(){try{const res=await fetch("/api/loot");const data=await res.json();allLoot=data.items||[];document.getElementById("lootBadge").textContent=data.count||0;document.getElementById("totalLoot").textContent=data.count||0;document.getElementById("protocolCount").textContent=Object.keys(data.protocols||{}).length;displayLoot(allLoot)}catch(err){console.error("Failed to fetch loot:",err)}}
-function displayLoot(items){const container=document.getElementById("lootItems");if(!items||items.length===0){container.innerHTML='<div class="empty-state"><div class="empty-state-icon">🎣</div><p>No credentials captured yet</p><p style="margin-top:10px;font-size:.9em">Start capture and wait for traffic analysis</p></div>';return}container.innerHTML=items.map(item=>`<div class="loot-item ${item.protocol.toLowerCase()}"><div class="loot-header"><span class="loot-protocol">${item.protocol}</span><span class="loot-timestamp">${new Date(item.timestamp).toLocaleString()}</span></div><div class="loot-content"><div class="loot-field">Username: <strong>${item.username}</strong></div><div class="loot-field">Password: <strong>${item.password}</strong></div><div class="loot-field" style="margin-top:10px;font-size:.85em;color:#666">Source: ${item.source}</div></div></div>`).join("")}
-function filterLoot(filter){currentFilter=filter;document.querySelectorAll(".filter-btn").forEach(btn=>{const label=btn.textContent.trim();btn.classList.toggle("active",(filter==="all"&&label==="All")||label===filter)});const filtered=filter==="all"?allLoot:allLoot.filter(item=>item.protocol===filter);displayLoot(filtered)}
-async function exportLoot(){window.location.href="/api/loot/export"}
+async function fetchStatus(){try{const res=await fetch("/api/status");const data=await res.json();updateStatus(data)}catch(err){console.error("Failed to fetch status:",err);setTimeout(fetchStatus,5000)}}
+async function fetchLoot(){try{const res=await fetch("/api/loot");const data=await res.json();const outputEl=document.getElementById("lootOutput");if(outputEl){if(data.has_output&&data.raw_output){outputEl.innerHTML=`<pre style="margin:0;color:#0f0;font-family:monospace;font-size:.9em">${escapeHtml(data.raw_output)}</pre>`;const badge=document.getElementById("lootBadge");if(badge)badge.textContent="✓"}else{outputEl.innerHTML='<div style="color:#999;text-align:center;padding:40px"><div style="font-size:3em;margin-bottom:15px">🎣</div><p>No PCredz output yet</p><p style="margin-top:10px;font-size:.9em">Click "Analyze PCAP Now" to run credential extraction</p></div>';const badge=document.getElementById("lootBadge");if(badge)badge.textContent="0"}}}catch(err){console.error("Failed to fetch loot:",err)}}
+function escapeHtml(text){const div=document.createElement('div');div.textContent=text;return div.innerHTML}
+async function exportLoot(){try{const res=await fetch("/api/loot");const data=await res.json();if(data.has_output){window.location.href="/api/loot/export"}else{showAlert("No output to export yet","info")}}catch(err){showAlert("Error: "+err.message,"error")}}
 async function clearLoot(){if(confirm("Clear all captured credentials?")){try{const res=await fetch("/api/loot/clear",{method:"POST"});const data=await res.json();if(data.success){showAlert("Loot cleared","success");fetchLoot()}else{showAlert("Failed to clear loot","error")}}catch(err){showAlert("Error: "+err.message,"error")}}}
 async function startCapture(){document.getElementById("btnStart").disabled=true;showAlert("Starting packet capture...","info");try{const res=await fetch("/api/start",{method:"POST"});const data=await res.json();if(data.success){showAlert("Capture started!","success");setTimeout(fetchStatus,2000);setTimeout(fetchLoot,3000)}else{showAlert("Failed to start. Check logs.","error");document.getElementById("btnStart").disabled=false}}catch(err){showAlert("Error: "+err.message,"error");document.getElementById("btnStart").disabled=false}}
 async function stopCapture(){if(confirm("Stop capture? Bridge will remain active.")){document.getElementById("btnStop").disabled=true;showAlert("Stopping capture...","info");try{const res=await fetch("/api/stop",{method:"POST"});const data=await res.json();if(data.success){showAlert("Capture stopped!","success")}else{showAlert("Failed to stop","error")}setTimeout(fetchStatus,3000);setTimeout(fetchLoot,4000)}catch(err){showAlert("Error: "+err.message,"error")}}}
