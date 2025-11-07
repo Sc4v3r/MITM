@@ -760,6 +760,44 @@ function exportSessions(){
 window.location.href="/api/evilginx/sessions";
 }
 
+async function enableRouting(){
+if(!confirm("Enable internet routing?\n\nThis allows the appliance to access the internet through the gateway.\n\nNeeded for:\n- Installing Evilginx2\n- Downloading updates\n- Remote access"))return;
+const btnEnable=document.getElementById("btnEnableRouting");
+if(btnEnable)btnEnable.disabled=true;
+showAlert("Enabling internet routing...","info");
+try{
+const res=await fetch("/api/routing/enable",{method:"POST"});
+const data=await res.json();
+if(data.success){
+showAlert("Internet routing enabled!","success");
+setTimeout(fetchStatus,1000);
+}else{
+showAlert("Failed to enable routing","error");
+if(btnEnable)btnEnable.disabled=false;
+}
+}
+catch(err){
+showAlert("Error: "+err.message,"error");
+if(btnEnable)btnEnable.disabled=false;
+}
+}
+
+async function disableRouting(){
+if(!confirm("Disable internet routing?"))return;
+showAlert("Disabling internet routing...","info");
+try{
+const res=await fetch("/api/routing/disable",{method:"POST"});
+const data=await res.json();
+if(data.success){
+showAlert("Internet routing disabled","success");
+setTimeout(fetchStatus,1000);
+}
+}
+catch(err){
+showAlert("Error: "+err.message,"error");
+}
+}
+
 async function installEvilginx(){
 if(!confirm("Install Evilginx2?\n\nThis will:\n- Install Go compiler\n- Clone Evilginx2 repository\n- Build from source\n- Configure permissions\n\nThis may take 5-10 minutes."))return;
 

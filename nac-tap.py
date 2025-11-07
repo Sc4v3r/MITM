@@ -868,6 +868,74 @@ lures get-url 0
         log("Evilginx sessions cleared")
 
 # ============================================================================
+# INTERNET ROUTING HELPER
+# ============================================================================
+
+def enable_internet_routing(bridge_name='br0'):
+    """Enable internet access for the appliance through gateway"""
+    try:
+        log("Enabling internet routing for appliance...")
+        
+        # Get default gateway
+        result = run_cmd(['ip', 'route', 'show', 'default'])
+        if not result or result.returncode != 0:
+            log("No default gateway found", 'ERROR')
+            return False
+        
+        # Parse gateway interface
+        gateway_match = re.search(r'default via \S+ dev (\S+)', result.stdout)
+        if not gateway_match:
+            log("Could not parse default gateway", 'ERROR')
+            return False
+        
+        gateway_iface = gateway_match.group(1)
+        log(f"Gateway interface: {gateway_iface}")
+        
+        # Enable IP forwarding
+        run_cmd(['sysctl', '-w', 'net.ipv4.ip_forward=1'])
+        
+        # Setup NAT for appliance to access internet
+        # POSTROUTING: Traffic from bridge to gateway interface
+        run_cmd(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
+        
+        # Allow forwarding
+        run_cmd(['iptables', '-A', 'FORWARD', '-i', bridge_name, '-o', gateway_iface, '-j', 'ACCEPT'])
+        run_cmd(['iptables', '-A', 'FORWARD', '-i', gateway_iface, '-o', bridge_name, '-m', 'state', '--state', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'])
+        
+        log(f"✓ Internet routing enabled via {gateway_iface}", 'SUCCESS')
+        return True
+        
+    except Exception as e:
+        log(f"Internet routing setup failed: {e}", 'ERROR')
+        return False
+
+def disable_internet_routing(bridge_name='br0'):
+    """Disable internet routing"""
+    try:
+        log("Disabling internet routing...")
+        
+        # Get gateway interface
+        result = run_cmd(['ip', 'route', 'show', 'default'])
+        if result and result.returncode == 0:
+            gateway_match = re.search(r'default via \S+ dev (\S+)', result.stdout)
+            if gateway_match:
+                gateway_iface = gateway_match.group(1)
+                
+                # Remove NAT rule
+                run_cmd(['iptables', '-t', 'nat', '-D', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
+                
+                # Remove forwarding rules
+                run_cmd(['iptables', '-D', 'FORWARD', '-i', bridge_name, '-o', gateway_iface, '-j', 'ACCEPT'])
+                run_cmd(['iptables', '-D', 'FORWARD', '-i', gateway_iface, '-o', bridge_name, '-m', 'state', '--state', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'])
+        
+        log("Internet routing disabled")
+        return True
+        
+    except Exception as e:
+        log(f"Failed to disable routing: {e}", 'ERROR')
+        return False
+
+# ============================================================================
 # BRIDGE MANAGER
 # ============================================================================
 
@@ -889,6 +957,7 @@ class BridgeManager:
         self.analysis_interval = CONFIG.get('ANALYSIS_INTERVAL', 300)
         self.stop_monitoring = False
         self.monitor_thread = None
+        self.internet_routing_enabled = False
 
     def detect_interfaces(self):
         """Detect ethernet interfaces (not wireless)"""
@@ -1216,7 +1285,8 @@ class BridgeManager:
             'gateway_ip': self.gateway_ip,
             'logs': self._get_logs(),
             'mitm': self.mitm_manager.get_status(),
-            'evilginx': self.evilginx_manager.get_status()
+            'evilginx': self.evilginx_manager.get_status(),
+            'internet_routing': self.internet_routing_enabled
         }
 
         if self.tcpdump_process and self.tcpdump_process.poll() is None:
@@ -1598,6 +1668,27 @@ class NACWebHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
             except Exception as e:
                 log(f"Installation endpoint error: {e}", 'ERROR')
+                self._send_json({'success': False, 'error': str(e)})
+        
+        # Internet routing endpoints
+        elif path == '/api/routing/enable':
+            try:
+                success = enable_internet_routing(CONFIG['BRIDGE_NAME'])
+                if success:
+                    self.bridge_manager.internet_routing_enabled = True
+                self._send_json({'success': success})
+            except Exception as e:
+                log(f"Enable routing error: {e}", 'ERROR')
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/routing/disable':
+            try:
+                success = disable_internet_routing(CONFIG['BRIDGE_NAME'])
+                if success:
+                    self.bridge_manager.internet_routing_enabled = False
+                self._send_json({'success': success})
+            except Exception as e:
+                log(f"Disable routing error: {e}", 'ERROR')
                 self._send_json({'success': False, 'error': str(e)})
         
         else:
