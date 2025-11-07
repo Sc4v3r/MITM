@@ -876,37 +876,81 @@ def enable_internet_routing(bridge_name='br0'):
     try:
         log("Enabling internet routing for appliance...")
         
-        # Get default gateway
+        # Try multiple methods to find gateway interface
+        gateway_iface = None
+        
+        # Method 1: Parse ip route
         result = run_cmd(['ip', 'route', 'show', 'default'])
-        if not result or result.returncode != 0:
-            log("No default gateway found", 'ERROR')
+        if result and result.returncode == 0 and result.stdout:
+            log(f"Default route output: {result.stdout}")
+            # Try different patterns
+            patterns = [
+                r'default via \S+ dev (\S+)',
+                r'default.*dev (\S+)',
+                r'dev (\S+).*default'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, result.stdout)
+                if match:
+                    gateway_iface = match.group(1)
+                    break
+        
+        # Method 2: Get first non-bridge interface with a default route
+        if not gateway_iface:
+            result = run_cmd(['ip', 'route'])
+            if result and result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'default' in line:
+                        words = line.split()
+                        if 'dev' in words:
+                            idx = words.index('dev')
+                            if idx + 1 < len(words):
+                                iface = words[idx + 1]
+                                if iface != bridge_name and not iface.startswith('br'):
+                                    gateway_iface = iface
+                                    break
+        
+        # Method 3: Use wlan0 as fallback (common WiFi interface)
+        if not gateway_iface:
+            for iface in ['wlan0', 'eth0', 'ens33', 'enp0s3']:
+                result = run_cmd(['ip', 'link', 'show', iface])
+                if result and result.returncode == 0:
+                    gateway_iface = iface
+                    log(f"Using {iface} as gateway interface (fallback)")
+                    break
+        
+        if not gateway_iface:
+            log("Could not determine gateway interface", 'ERROR')
+            log("Available interfaces:", 'INFO')
+            result = run_cmd(['ip', 'link', 'show'])
+            if result:
+                log(result.stdout)
             return False
         
-        # Parse gateway interface
-        gateway_match = re.search(r'default via \S+ dev (\S+)', result.stdout)
-        if not gateway_match:
-            log("Could not parse default gateway", 'ERROR')
-            return False
-        
-        gateway_iface = gateway_match.group(1)
-        log(f"Gateway interface: {gateway_iface}")
+        log(f"Using gateway interface: {gateway_iface}")
         
         # Enable IP forwarding
         run_cmd(['sysctl', '-w', 'net.ipv4.ip_forward=1'])
+        log("IP forwarding enabled")
         
         # Setup NAT for appliance to access internet
         # POSTROUTING: Traffic from bridge to gateway interface
-        run_cmd(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
+        result = run_cmd(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
+        if result and result.returncode == 0:
+            log(f"NAT rule added for {gateway_iface}")
         
         # Allow forwarding
         run_cmd(['iptables', '-A', 'FORWARD', '-i', bridge_name, '-o', gateway_iface, '-j', 'ACCEPT'])
         run_cmd(['iptables', '-A', 'FORWARD', '-i', gateway_iface, '-o', bridge_name, '-m', 'state', '--state', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'])
+        log("Forwarding rules added")
         
-        log(f"✓ Internet routing enabled via {gateway_iface}", 'SUCCESS')
+        log(f"Internet routing enabled via {gateway_iface}", 'SUCCESS')
         return True
         
     except Exception as e:
         log(f"Internet routing setup failed: {e}", 'ERROR')
+        import traceback
+        log(traceback.format_exc(), 'ERROR')
         return False
 
 def disable_internet_routing(bridge_name='br0'):

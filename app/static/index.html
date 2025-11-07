@@ -136,14 +136,6 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <div class="card-value" id="captureDuration">00:00:00</div>
 <div class="card-detail">Elapsed time</div>
 </div>
-<div class="card" id="routingCard" style="border-left-color:#17a2b8">
-<div class="card-title">Internet Routing</div>
-<div class="card-detail" id="routingStatus">Disabled</div>
-<div style="margin-top:10px">
-<button id="btnEnableRouting" class="btn btn-start" onclick="enableRouting()" style="padding:6px 12px;font-size:.85em;margin-right:5px">Enable</button>
-<button id="btnDisableRouting" class="btn btn-danger" onclick="disableRouting()" style="padding:6px 12px;font-size:.85em" disabled>Disable</button>
-</div>
-</div>
 </div>
 <div id="captureInfo" class="capture-info">
 <h3>Active Capture</h3>
@@ -254,6 +246,17 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <div id="evilginxNotInstalled" style="display:none;background:#ffe7e7;padding:20px;border-radius:8px;margin:15px 0;border-left:4px solid #e74c3c">
 <h3 style="color:#e74c3c;margin-bottom:15px">WARNING: Evilginx2 Not Installed</h3>
 <p style="margin-bottom:15px">Evilginx2 is required for OAuth token and cookie capture.</p>
+
+<div style="background:#fff3cd;padding:15px;border-radius:5px;margin:15px 0;border-left:3px solid #ffc107">
+<h4 style="color:#856404;margin-bottom:10px">Internet Access Required</h4>
+<p style="font-size:.9em;color:#856404;margin-bottom:10px">Installation needs internet to download Go compiler and clone repository.</p>
+<div style="display:flex;gap:10px;align-items:center">
+<span style="font-size:.9em;color:#856404">Routing Status: <strong id="routingStatus2">Disabled</strong></span>
+<button id="btnEnableRouting" class="btn btn-start" onclick="enableRouting()" style="padding:6px 12px;font-size:.85em">Enable Internet</button>
+<button id="btnDisableRouting" class="btn btn-danger" onclick="disableRouting()" style="padding:6px 12px;font-size:.85em" disabled>Disable</button>
+</div>
+</div>
+
 <button class="btn btn-start" onclick="installEvilginx()" style="margin-top:10px">Install Evilginx2 Now</button>
 <p style="margin-top:15px;font-size:.9em;color:#999">Installation takes 5-10 minutes (includes Go compiler build)</p>
 </div>
