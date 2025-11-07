@@ -1369,10 +1369,26 @@ class NACWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def _send_html(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(get_html_template().encode('utf-8'))
+        """Serve HTML from external file or fallback to embedded"""
+        try:
+            # Try to load from external file first
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            html_path = os.path.join(script_dir, 'app', 'static', 'index.html')
+            
+            if os.path.exists(html_path):
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            else:
+                # Fallback to embedded template
+                html_content = get_html_template()
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(html_content.encode('utf-8'))
+        except Exception as e:
+            log(f"Error serving HTML: {e}", 'ERROR')
+            self.send_error(500, str(e))
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -1588,8 +1604,10 @@ class NACWebHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
 # ============================================================================
-# HTML TEMPLATE
+# HTML TEMPLATE (LEGACY - Use app/static/index.html instead)
 # ============================================================================
+# Note: This embedded template is kept as fallback only.
+# The live HTML is now served from app/static/index.html for easier maintenance.
 
 def get_html_template():
     """Return complete HTML template"""
