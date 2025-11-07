@@ -146,7 +146,25 @@ cd "$EVILGINX_DIR"
 # Ensure Go modules are enabled
 export GO111MODULE=on
 
+# Disable automatic Go toolchain downloads (prevents go1.22 error)
+export GOTOOLCHAIN=local
+
+# Check go.mod requirements
+if [ -f "go.mod" ]; then
+    echo -e "${YELLOW}[INFO]${NC} Checking Evilginx2 Go requirements..."
+    grep "^go " go.mod || true
+    
+    # If go.mod requires Go 1.22+, modify it to use our version
+    if grep -q "^go 1.2[2-9]" go.mod; then
+        echo -e "${YELLOW}[INFO]${NC} Patching go.mod to use Go 1.21..."
+        sed -i 's/^go 1.2[2-9]/go 1.21/' go.mod
+        # Remove toolchain directive if present
+        sed -i '/^toolchain/d' go.mod
+    fi
+fi
+
 # Build the binary
+echo -e "${YELLOW}[INFO]${NC} Building Evilginx2 (this may take a few minutes)..."
 go build -o evilginx main.go 2>&1 | grep -v "^go: downloading" || true
 
 if [ ! -f "$EVILGINX_DIR/evilginx" ]; then
