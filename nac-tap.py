@@ -913,51 +913,71 @@ def enable_internet_routing(bridge_name='br0'):
         
         log(f"Using gateway interface: {gateway_iface}")
         
-        # Check if eth interface has internet access
-        log(f"Testing {gateway_iface} connectivity...")
-        result = run_cmd(['ping', '-c', '1', '-W', '2', '-I', gateway_iface, '8.8.8.8'])
-        if not result or result.returncode != 0:
-            log(f"WARNING: {gateway_iface} cannot reach internet", 'WARNING')
-            log("Continuing anyway - check your network connection")
-        else:
-            log(f"{gateway_iface} has internet connectivity")
+        # Get the real gateway IP address (the router/upstream device)
+        gateway_ip = None
+        result = run_cmd(['ip', 'route', 'show', 'default'])
+        if result and result.returncode == 0 and result.stdout:
+            # Parse "default via 192.168.1.1 dev eth0"
+            match = re.search(r'default via (\S+)', result.stdout)
+            if match:
+                gateway_ip = match.group(1)
+                log(f"Detected upstream gateway IP: {gateway_ip}")
         
-        # Ensure bridge has an IP if not already
-        result = run_cmd(['ip', 'addr', 'show', bridge_name])
+        if not gateway_ip:
+            log("WARNING: Could not detect gateway IP - using 10.200.66.254 as default", 'WARNING')
+            gateway_ip = "10.200.66.254"
+        
+        # CRITICAL: Since eth0/eth1 are in bridge mode, we need to:
+        # 1. Assign IP to the gateway interface (eth0) so appliance can route through it
+        # 2. Add a default route pointing through that interface
+        
+        log(f"Configuring {gateway_iface} for internet access...")
+        
+        # Remove any existing IP from gateway interface
+        run_cmd(['ip', 'addr', 'flush', 'dev', gateway_iface])
+        
+        # Add temporary IP to gateway interface (outside bridge subnet)
+        temp_ip = "10.200.67.1/24"
+        result = run_cmd(['ip', 'addr', 'add', temp_ip, 'dev', gateway_iface])
         if result and result.returncode == 0:
-            if CONFIG['BRIDGE_IP'] not in result.stdout:
-                log(f"Adding IP {CONFIG['BRIDGE_IP']} to {bridge_name}")
-                run_cmd(['ip', 'addr', 'add', f"{CONFIG['BRIDGE_IP']}/24", 'dev', bridge_name])
+            log(f"Added temporary IP {temp_ip} to {gateway_iface}")
+        
+        # Bring interface up
+        run_cmd(['ip', 'link', 'set', gateway_iface, 'up'])
         
         # Enable IP forwarding
         run_cmd(['sysctl', '-w', 'net.ipv4.ip_forward=1'])
         log("IP forwarding enabled")
         
-        # Flush any existing NAT rules to avoid conflicts
-        run_cmd(['iptables', '-t', 'nat', '-F', 'POSTROUTING'])
+        # Add default route via the real gateway
+        # Delete existing default routes first
+        run_cmd(['ip', 'route', 'del', 'default'])
         
-        # Setup NAT for bridge traffic to go out via gateway
-        result = run_cmd(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-s', '10.200.66.0/24', '-o', gateway_iface, '-j', 'MASQUERADE'])
+        # Add new default route
+        result = run_cmd(['ip', 'route', 'add', 'default', 'via', gateway_ip, 'dev', gateway_iface])
         if result and result.returncode == 0:
-            log(f"NAT rule added: bridge -> {gateway_iface}")
+            log(f"Default route added: via {gateway_ip} dev {gateway_iface}")
         else:
-            log("NAT rule may have failed", 'WARNING')
+            log("Failed to add default route", 'ERROR')
         
-        # Allow forwarding both ways
-        run_cmd(['iptables', '-I', 'FORWARD', '1', '-i', bridge_name, '-o', gateway_iface, '-j', 'ACCEPT'])
-        run_cmd(['iptables', '-I', 'FORWARD', '1', '-i', gateway_iface, '-o', bridge_name, '-j', 'ACCEPT'])
+        # Setup NAT for bridge traffic
+        result = run_cmd(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
+        if result and result.returncode == 0:
+            log(f"NAT/MASQUERADE enabled on {gateway_iface}")
+        
+        # Allow forwarding
+        run_cmd(['iptables', '-I', 'FORWARD', '1', '-j', 'ACCEPT'])
         log("Forwarding rules added")
         
-        # Add default route via the bridge if not present
-        run_cmd(['ip', 'route', 'add', 'default', 'via', CONFIG['BRIDGE_IP'], 'dev', bridge_name, 'metric', '100'])
-        
-        # Test connectivity from bridge
-        log("Testing internet from bridge...")
-        result = run_cmd(['ping', '-c', '1', '-W', '3', '8.8.8.8'], timeout=5)
+        # Test connectivity
+        log("Testing internet connectivity...")
+        result = run_cmd(['ping', '-c', '2', '-W', '3', '8.8.8.8'], timeout=8)
         if result and result.returncode == 0:
-            log("Internet routing WORKING - ping successful!", 'SUCCESS')
+            log("SUCCESS! Internet routing is working!", 'SUCCESS')
+            log("You can now run: apt update, wget, curl, etc.")
         else:
-            log("Internet test ping failed - check network", 'WARNING')
+            log("Ping test failed - but routing may still work", 'WARNING')
+            log(f"Try manually: curl -I https://google.com")
         
         log(f"Internet routing enabled via {gateway_iface}", 'SUCCESS')
         return True
@@ -973,21 +993,22 @@ def disable_internet_routing(bridge_name='br0'):
     try:
         log("Disabling internet routing...")
         
-        # Get gateway interface
-        result = run_cmd(['ip', 'route', 'show', 'default'])
-        if result and result.returncode == 0:
-            gateway_match = re.search(r'default via \S+ dev (\S+)', result.stdout)
-            if gateway_match:
-                gateway_iface = gateway_match.group(1)
-                
-                # Remove NAT rule
-                run_cmd(['iptables', '-t', 'nat', '-D', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
-                
-                # Remove forwarding rules
-                run_cmd(['iptables', '-D', 'FORWARD', '-i', bridge_name, '-o', gateway_iface, '-j', 'ACCEPT'])
-                run_cmd(['iptables', '-D', 'FORWARD', '-i', gateway_iface, '-o', bridge_name, '-m', 'state', '--state', 'RELATED,ESTABLISHED', '-j', 'ACCEPT'])
+        # Find which eth interface was used
+        for gateway_iface in ['eth0', 'eth1']:
+            # Remove temporary IP
+            run_cmd(['ip', 'addr', 'flush', 'dev', gateway_iface])
+            log(f"Flushed IP from {gateway_iface}")
+            
+            # Remove NAT rules
+            run_cmd(['iptables', '-t', 'nat', '-D', 'POSTROUTING', '-o', gateway_iface, '-j', 'MASQUERADE'])
         
-        log("Internet routing disabled")
+        # Remove default route
+        run_cmd(['ip', 'route', 'del', 'default'])
+        
+        # Flush all forward rules
+        run_cmd(['iptables', '-F', 'FORWARD'])
+        
+        log("Internet routing disabled - appliance back to isolated mode", 'SUCCESS')
         return True
         
     except Exception as e:
