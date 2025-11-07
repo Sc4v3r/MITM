@@ -1370,9 +1370,9 @@ class NACWebHandler(BaseHTTPRequestHandler):
 
     def _send_html(self):
         self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write(get_html_template().encode())
+        self.wfile.write(get_html_template().encode('utf-8'))
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -1416,13 +1416,13 @@ class NACWebHandler(BaseHTTPRequestHandler):
                 test_file_path = os.path.join(script_dir, 'test-webui.html')
                 
                 if os.path.exists(test_file_path):
-                    with open(test_file_path, 'r') as f:
+                    with open(test_file_path, 'r', encoding='utf-8') as f:
                         test_html = f.read()
                     log(f"Serving test page from: {test_file_path}")
                     self.send_response(200)
-                    self.send_header('Content-type', 'text/html')
+                    self.send_header('Content-type', 'text/html; charset=utf-8')
                     self.end_headers()
-                    self.wfile.write(test_html.encode())
+                    self.wfile.write(test_html.encode('utf-8'))
                 else:
                     log(f"Test page not found at: {test_file_path}", 'ERROR')
                     self.send_error(404, f"Test page not found at: {test_file_path}")
