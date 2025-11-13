@@ -320,6 +320,10 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 
 <div style="background:#f8f9fa;border-radius:10px;padding:20px;margin-bottom:20px">
 <h3 style="margin-bottom:15px;color:#333">WiFi Connection</h3>
+<div id="currentConnection" style="padding:12px;background:#fff;border-left:4px solid #667eea;border-radius:5px;margin-bottom:15px;display:none">
+<strong style="color:#333">Current Connection:</strong><br>
+<span id="currentConnectionInfo" style="color:#666;font-size:.9em">Not connected</span>
+</div>
 <div style="margin-bottom:15px">
 <label style="display:block;margin-bottom:5px;font-weight:600">WLAN Interface</label>
 <select id="wifiInterface" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
@@ -336,7 +340,7 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <div class="button-group">
 <button onclick="connectWiFi()" class="btn btn-start">Connect</button>
 <button onclick="disconnectWiFi()" class="btn btn-stop">Disconnect</button>
-<button onclick="testInternet()" class="btn btn-refresh">Test Internet</button>
+<button onclick="testInternet()" id="btnTestInternet" class="btn btn-refresh">Test Internet</button>
 </div>
 </div>
 <div id="wifiStatus" style="padding:10px;background:#fff;border-radius:5px;margin-top:10px"></div>
@@ -645,6 +649,7 @@ logEl.scrollTop=logEl.scrollHeight;
 }
 if(data.wifi){
 updateWifiStatus(data.wifi);
+updateCurrentConnection(data.wifi);
 }
 if(data.slack){
 const slackStatus=document.getElementById("slackStatus");
@@ -811,6 +816,21 @@ function selectAP(ssid){
 document.getElementById("wifiSSID").value=ssid;
 }
 
+function updateCurrentConnection(wifiData){
+const currentConn=document.getElementById("currentConnection");
+const currentConnInfo=document.getElementById("currentConnectionInfo");
+if(currentConn&&currentConnInfo){
+if(wifiData&&wifiData.connected){
+currentConn.style.display="block";
+currentConn.style.borderLeftColor="#28a745";
+currentConnInfo.innerHTML="Interface: <strong>"+(wifiData.interface||"N/A")+"</strong> | SSID: <strong>"+(wifiData.ssid||"N/A")+"</strong> | IP: "+(wifiData.ip_address||"N/A");
+}else{
+currentConn.style.display="none";
+currentConnInfo.innerHTML="Not connected";
+}
+}
+}
+
 async function connectWiFi(){
 const iface=document.getElementById("wifiInterface").value;
 const ssid=document.getElementById("wifiSSID").value;
@@ -837,6 +857,7 @@ const data=await res.json();
 if(data.success){
 showAlert("Disconnected","success");
 updateWifiStatus({connected:false});
+updateCurrentConnection({connected:false});
 }else{
 showAlert("Disconnect failed","error");
 }
@@ -844,33 +865,62 @@ showAlert("Disconnect failed","error");
 }
 
 async function testInternet(){
+const btnTest=document.getElementById("btnTestInternet");
+if(btnTest)btnTest.disabled=true;
+showAlert("Testing internet connectivity...","info");
 try{
 const res=await fetch("/api/wifi/test",{method:"POST"});
 const data=await res.json();
 const status=document.getElementById("wifiStatus");
 if(status){
 let html="<strong>Internet Test:</strong><br>";
-html+="Ping: "+(data.ping?"OK":"FAIL")+"<br>";
-html+="DNS: "+(data.dns?"OK":"FAIL")+"<br>";
+html+="Ping: "+(data.ping?"<span style='color:#28a745'>OK</span>":"<span style='color:#dc3545'>FAIL</span>")+"<br>";
+html+="DNS: "+(data.dns?"<span style='color:#28a745'>OK</span>":"<span style='color:#dc3545'>FAIL</span>")+"<br>";
 html+="Status: "+(data.connected?"<span style='color:#28a745'>Connected</span>":"<span style='color:#dc3545'>No Internet</span>");
 status.innerHTML=html;
 }
-}catch(err){console.error("Test failed:",err)}
+if(data.connected){
+showAlert("Internet connectivity OK","success");
+}else{
+showAlert("Internet connectivity failed","error");
+}
+}catch(err){
+showAlert("Test failed: "+err.message,"error");
+}finally{
+if(btnTest)btnTest.disabled=false;
+}
 }
 
 function updateWifiStatus(data){
 const status=document.getElementById("wifiStatus");
+const currentConn=document.getElementById("currentConnection");
+const currentConnInfo=document.getElementById("currentConnectionInfo");
 if(status){
 let html="<strong>WiFi Status:</strong><br>";
 if(data.connected){
 html+="Connected to: "+data.ssid+"<br>";
 html+="IP: "+(data.ip_address||"N/A")+"<br>";
 html+="Gateway: "+(data.gateway||"N/A");
+if(currentConn){
+currentConn.style.display="block";
+currentConn.style.borderLeftColor="#28a745";
+}
+if(currentConnInfo){
+currentConnInfo.innerHTML="Interface: <strong>"+(data.interface||"N/A")+"</strong> | SSID: <strong>"+(data.ssid||"N/A")+"</strong> | IP: "+(data.ip_address||"N/A");
+}
 }else{
 html+="Not connected";
+if(currentConn){
+currentConn.style.display="none";
+}
+if(currentConnInfo){
+currentConnInfo.innerHTML="Not connected";
+}
 }
 status.innerHTML=html;
 }
+const btnTest=document.getElementById("btnTestInternet");
+if(btnTest)btnTest.disabled=false;
 }
 
 async function testWebhook(){
